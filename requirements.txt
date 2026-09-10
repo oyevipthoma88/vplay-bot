@@ -1,0 +1,11 @@
+# Kurigram is an actively-maintained drop-in fork of Pyrogram (the
+# original pyrogram package has been effectively unmaintained) — the
+# import path stays `pyrogram` everywhere in this codebase, only the
+# PyPI package name changes.
+kurigram>=2.2,<4.0
+tgcrypto>=1.2.5,<2.0
+
+# Handles joining + streaming media into a Telegram group video/voice chat.
+py-tgcalls>=2.3.0,<3.0.0
+
+python-dotenv>=1.0.1,<2.0

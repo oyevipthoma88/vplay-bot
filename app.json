@@ -1,0 +1,54 @@
+{
+  "name": "VPlay Telegram Bot",
+  "description": "Telegram bot that plays user-provided video/audio directly in a group's video chat — no YouTube/cookies needed. Full controls: pause, resume, skip, seek, queue.",
+  "keywords": ["telegram", "bot", "video", "video-chat", "pytgcalls", "python"],
+  "repository": "https://github.com/oyevipthoma88/vplay-bot",
+  "env": {
+    "API_ID": {
+      "description": "my.telegram.org se milega (API Development Tools) — dono bot aur assistant account isi API_ID ko use karte hain.",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "my.telegram.org se milega, API_ID ke sath hi.",
+      "required": true
+    },
+    "BOT_TOKEN": {
+      "description": "@BotFather se /newbot karke banaya hua bot token.",
+      "required": true
+    },
+    "SESSION_STRING": {
+      "description": "generate_session.py chala kar (locally) banaya gaya assistant/userbot session string. Ye account jis bhi group me video chalana hai wahan admin hona chahiye.",
+      "required": true
+    },
+    "OWNER_ID": {
+      "description": "Aapki apni Telegram numeric user ID (e.g. @userinfobot se pata karein). Owner hamesha commands use kar sakta hai.",
+      "required": true
+    },
+    "AUTH_ONLY_ADMINS": {
+      "description": "true rakhein to sirf group admins hi vplay/vskip/vstop wagera control kar sakte hain. false karne par group ka koi bhi member control kar sakega.",
+      "value": "true",
+      "required": false
+    },
+    "DEFAULT_VIDEO_QUALITY": {
+      "description": "sd_480p, hd_720p, ya fhd_1080p.",
+      "value": "sd_480p",
+      "required": false
+    },
+    "DEFAULT_AUDIO_QUALITY": {
+      "description": "low, medium, ya high.",
+      "value": "high",
+      "required": false
+    }
+  },
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "standard-2x"
+    }
+  },
+  "stack": "heroku-26",
+  "buildpacks": [
+    { "url": "https://github.com/heroku/heroku-buildpack-apt" },
+    { "url": "heroku/python" }
+  ]
+}
