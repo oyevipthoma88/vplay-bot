@@ -4,6 +4,7 @@ from pyrogram.types import Message
 from bot.core import player as player_core
 from bot.core.clients import bot
 from bot.core.queue import Track, get_state
+from bot.utils.commands import cmd
 from bot.utils.decorators import admin_only, error_guard
 from bot.utils.extract import resolve_source
 from bot.utils.formatting import format_duration, parse_time_to_seconds
@@ -20,7 +21,7 @@ _PRIVATE_HINT = (
 
 
 def _register_private_hint(commands):
-    @bot.on_message(filters.command(commands) & _PRIVATE)
+    @bot.on_message(cmd(commands) & _PRIVATE)
     @error_guard
     async def _hint(client, message: Message):
         await message.reply_text(_PRIVATE_HINT)
@@ -28,12 +29,13 @@ def _register_private_hint(commands):
     return _hint
 
 
-@bot.on_message(filters.command(["vplay", "play"]) & _GROUP)
+@bot.on_message(cmd(["vplay", "play"]) & _GROUP)
 @error_guard
 @admin_only
 async def vplay_cmd(client, message: Message):
     status = await message.reply_text("Media ready kar raha hoon...")
     try:
+        await player_core.ensure_assistant_in_chat(message.chat.id)
         source, title, is_url = await resolve_source(message)
     except Exception:
         try:
@@ -48,7 +50,16 @@ async def vplay_cmd(client, message: Message):
         requested_by=message.from_user.first_name if message.from_user else "someone",
         is_url=is_url,
     )
-    started = await player_core.play_or_queue(message.chat.id, track)
+    try:
+        started = await player_core.play_or_queue(message.chat.id, track)
+    except Exception:
+        if not is_url:
+            player_core._cleanup_file(track)
+        try:
+            await status.delete()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
     if started:
         await status.edit_text(f"▶️ Ab chal raha hai: {title}")
     else:
@@ -56,7 +67,7 @@ async def vplay_cmd(client, message: Message):
         await status.edit_text(f"➕ Queue mein add ho gaya (position {position}): {title}")
 
 
-@bot.on_message(filters.command("vpause") & _GROUP)
+@bot.on_message(cmd("vpause") & _GROUP)
 @error_guard
 @admin_only
 async def vpause_cmd(client, message: Message):
@@ -64,7 +75,7 @@ async def vpause_cmd(client, message: Message):
     await message.reply_text("⏸ Paused.")
 
 
-@bot.on_message(filters.command("vresume") & _GROUP)
+@bot.on_message(cmd("vresume") & _GROUP)
 @error_guard
 @admin_only
 async def vresume_cmd(client, message: Message):
@@ -72,7 +83,7 @@ async def vresume_cmd(client, message: Message):
     await message.reply_text("▶️ Resumed.")
 
 
-@bot.on_message(filters.command("vskip") & _GROUP)
+@bot.on_message(cmd("vskip") & _GROUP)
 @error_guard
 @admin_only
 async def vskip_cmd(client, message: Message):
@@ -86,7 +97,7 @@ async def vskip_cmd(client, message: Message):
         await message.reply_text("⏭ Queue khali hai — video chat se nikal gaya.")
 
 
-@bot.on_message(filters.command(["vstop", "vend"]) & _GROUP)
+@bot.on_message(cmd(["vstop", "vend"]) & _GROUP)
 @error_guard
 @admin_only
 async def vstop_cmd(client, message: Message):
@@ -94,7 +105,7 @@ async def vstop_cmd(client, message: Message):
     await message.reply_text("⏹ Ruk gaya aur video chat chhod di.")
 
 
-@bot.on_message(filters.command("vseek") & _GROUP)
+@bot.on_message(cmd("vseek") & _GROUP)
 @error_guard
 @admin_only
 async def vseek_cmd(client, message: Message):
@@ -112,7 +123,7 @@ async def vseek_cmd(client, message: Message):
     await status.edit_text(f"⏩ Ab {format_duration(seconds)} se chal raha hai.")
 
 
-@bot.on_message(filters.command(["vqueue", "vplaylist"]) & _GROUP)
+@bot.on_message(cmd(["vqueue", "vplaylist"]) & _GROUP)
 @error_guard
 async def vqueue_cmd(client, message: Message):
     state = get_state(message.chat.id)
@@ -130,7 +141,7 @@ async def vqueue_cmd(client, message: Message):
     await message.reply_text("\n".join(lines))
 
 
-@bot.on_message(filters.command(["vnowplaying", "vnp", "vcurrent"]) & _GROUP)
+@bot.on_message(cmd(["vnowplaying", "vnp", "vcurrent"]) & _GROUP)
 @error_guard
 async def vnowplaying_cmd(client, message: Message):
     state = get_state(message.chat.id)
@@ -145,7 +156,7 @@ async def vnowplaying_cmd(client, message: Message):
     )
 
 
-@bot.on_message(filters.command("vmute") & _GROUP)
+@bot.on_message(cmd("vmute") & _GROUP)
 @error_guard
 @admin_only
 async def vmute_cmd(client, message: Message):
@@ -153,7 +164,7 @@ async def vmute_cmd(client, message: Message):
     await message.reply_text("🔇 Muted.")
 
 
-@bot.on_message(filters.command("vunmute") & _GROUP)
+@bot.on_message(cmd("vunmute") & _GROUP)
 @error_guard
 @admin_only
 async def vunmute_cmd(client, message: Message):

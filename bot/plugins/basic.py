@@ -3,6 +3,7 @@ from pyrogram.types import Message
 
 from bot import __version__
 from bot.core.clients import bot
+from bot.utils.commands import cmd
 from bot.utils.decorators import error_guard
 
 START_TEXT = (
@@ -27,25 +28,26 @@ HELP_TEXT = (
     "/vnowplaying — abhi kya chal raha hai\n"
     "/vmute — assistant ko mute karega\n"
     "/vunmute — assistant ko unmute karega\n"
-    "/ping — bot alive hai ya nahi check\n\n"
+    "/ping — bot alive hai ya nahi check\n"
+    "/vdebug — bot/assistant ka status is group me\n\n"
     "Note: sirf direct links ya khud bheji hui files chalti hain — koi "
     "YouTube search/cookies wagera nahi chahiye."
 )
 
 
-@bot.on_message(filters.command("start"))
+@bot.on_message(cmd("start"))
 @error_guard
 async def start_cmd(client, message: Message):
     await message.reply_text(START_TEXT)
 
 
-@bot.on_message(filters.command("help"))
+@bot.on_message(cmd("help"))
 @error_guard
 async def help_cmd(client, message: Message):
     await message.reply_text(HELP_TEXT)
 
 
-@bot.on_message(filters.command("ping"))
+@bot.on_message(cmd("ping"))
 @error_guard
 async def ping_cmd(client, message: Message):
     await message.reply_text(f"Pong! Bot chal raha hai (v{__version__}).")

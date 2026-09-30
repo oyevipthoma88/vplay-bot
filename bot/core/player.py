@@ -19,7 +19,7 @@ from typing import Optional
 from pytgcalls.types import AudioQuality, MediaStream, VideoQuality
 
 from bot import config
-from bot.core.clients import call_py
+from bot.core.clients import assistant, bot, call_py
 from bot.core.queue import Track, clear_state, get_state
 from bot.logger import logger
 
@@ -80,11 +80,13 @@ async def _safe_call(action: str, *args):
 
 async def _start_stream(chat_id: int, track: Track) -> None:
     stream = MediaStream(track.source, _audio_quality(), _video_quality())
+    logger.info("Chat %s: stream start — %s", chat_id, track.title)
     try:
         await _safe_call("play", chat_id, stream)
     except RuntimeError:
         raise
     except Exception as e:  # noqa: BLE001 - genuinely need the broad catch here
+        logger.exception("Chat %s: play failed", chat_id)
         raise RuntimeError(
             "Video/voice chat se connect nahi ho paya. Check karein ki group "
             "ka video ya voice chat abhi active hai, aur assistant account us "
@@ -98,6 +100,62 @@ async def _start_stream(chat_id: int, track: Track) -> None:
     state.paused_duration = 0.0
     state.is_paused = False
     state.paused_at = None
+
+
+async def warm_up_assistant_peers() -> int:
+    """The assistant session is in-memory, so after every restart it has no
+    cached access hashes and cannot resolve group ids (PEER_ID_INVALID)
+    until it has seen them. Walking the dialog list fills that cache.
+    """
+    count = 0
+    try:
+        async for _ in assistant.get_dialogs():
+            count += 1
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Assistant dialogs load nahi ho paye: %s", e)
+    return count
+
+
+async def ensure_assistant_in_chat(chat_id: int) -> None:
+    """Makes sure the assistant is a member of `chat_id`, joining through a
+    bot-generated invite link if it isn't.
+    """
+    from pyrogram.errors import UserAlreadyParticipant, UserNotParticipant
+
+    async def _is_member() -> bool:
+        await assistant.get_chat_member(chat_id, "me")
+        return True
+
+    try:
+        if await _is_member():
+            return
+    except UserNotParticipant:
+        pass
+    except Exception as e:  # noqa: BLE001 - usually an unknown peer after restart
+        logger.info("Assistant chat %s resolve nahi kar paya (%s) — dialogs reload", chat_id, e)
+        await warm_up_assistant_peers()
+        try:
+            if await _is_member():
+                return
+        except Exception:  # noqa: BLE001
+            pass
+
+    logger.info("Assistant chat %s me nahi hai — invite link se join karwa raha hoon", chat_id)
+    try:
+        link = await bot.export_chat_invite_link(chat_id)
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(
+            "Assistant account is group me nahi hai, aur bot invite link nahi bana paya. "
+            "Assistant ko manually group me add karein, ya bot ko admin banakar "
+            "'Invite users via link' permission dein."
+        ) from e
+    try:
+        await assistant.join_chat(link)
+    except UserAlreadyParticipant:
+        pass
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Assistant group join nahi kar paya: {e}") from e
+    await asyncio.sleep(1)
 
 
 async def play_or_queue(chat_id: int, track: Track) -> bool:

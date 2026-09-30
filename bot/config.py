@@ -56,3 +56,10 @@ DEFAULT_VIDEO_QUALITY = _get_env_str("DEFAULT_VIDEO_QUALITY", default="sd_480p")
 
 # One of: low, medium, high
 DEFAULT_AUDIO_QUALITY = _get_env_str("DEFAULT_AUDIO_QUALITY", default="high").lower()
+
+# If the bot account doesn't receive a command (not in the group, privacy
+# mode, ...), let the assistant account pick it up and run it instead.
+ASSISTANT_FALLBACK = _get_env_bool("ASSISTANT_FALLBACK", default=True)
+
+# Send a "bot started" DM to OWNER_ID on every start.
+STARTUP_NOTIFY = _get_env_bool("STARTUP_NOTIFY", default=True)

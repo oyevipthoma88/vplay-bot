@@ -1,7 +1,14 @@
 {
   "name": "VPlay Telegram Bot",
   "description": "Telegram bot that plays user-provided video/audio directly in a group's video chat — no YouTube/cookies needed. Full controls: pause, resume, skip, seek, queue.",
-  "keywords": ["telegram", "bot", "video", "video-chat", "pytgcalls", "python"],
+  "keywords": [
+    "telegram",
+    "bot",
+    "video",
+    "video-chat",
+    "pytgcalls",
+    "python"
+  ],
   "repository": "https://github.com/oyevipthoma88/vplay-bot",
   "env": {
     "API_ID": {
@@ -38,6 +45,16 @@
       "description": "low, medium, ya high.",
       "value": "high",
       "required": false
+    },
+    "ASSISTANT_FALLBACK": {
+      "description": "true: agar bot ko group me command nahi milta to assistant account khud command chala dega.",
+      "value": "true",
+      "required": false
+    },
+    "STARTUP_NOTIFY": {
+      "description": "true: har start par OWNER_ID ko bot DM bhejega.",
+      "value": "true",
+      "required": false
     }
   },
   "formation": {
@@ -48,7 +65,11 @@
   },
   "stack": "heroku-26",
   "buildpacks": [
-    { "url": "https://github.com/heroku/heroku-buildpack-apt" },
-    { "url": "heroku/python" }
+    {
+      "url": "https://github.com/heroku/heroku-buildpack-apt"
+    },
+    {
+      "url": "heroku/python"
+    }
   ]
 }

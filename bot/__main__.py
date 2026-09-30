@@ -5,7 +5,8 @@ import asyncio
 # constructs a Pyrogram client — do not reorder these imports.
 from bot import LOOP
 
-from pyrogram import idle
+from pyrogram import idle, raw
+from pyrogram.types import BotCommand
 
 from bot.core.clients import assistant, bot, call_py
 from bot.logger import logger, setup_logging
@@ -13,6 +14,79 @@ from bot.logger import logger, setup_logging
 # Importing these registers their @bot.on_message(...) handlers.
 from bot.plugins import basic  # noqa: F401,E402
 from bot.plugins import player  # noqa: F401,E402
+from bot.plugins import diagnostics  # noqa: F401,E402
+from bot.plugins import fallback  # noqa: F401,E402
+
+from bot import __version__, config
+from bot.core import runtime
+from bot.core.player import warm_up_assistant_peers
+
+_BOT_COMMANDS = [
+    ("vplay", "Video/audio par reply karke ya link ke saath play"),
+    ("vpause", "Pause"),
+    ("vresume", "Resume"),
+    ("vskip", "Agla track"),
+    ("vseek", "Seek — /vseek 90 ya 1:30"),
+    ("vstop", "Stop aur video chat chhodo"),
+    ("vqueue", "Queue dekho"),
+    ("vnowplaying", "Abhi kya chal raha hai"),
+    ("vmute", "Mute"),
+    ("vunmute", "Unmute"),
+    ("vdebug", "Bot/assistant status"),
+    ("ping", "Bot alive check"),
+    ("help", "Sab commands"),
+]
+
+
+async def _startup_diagnostics(me, assistant_me) -> None:
+    handler_count = sum(len(g) for g in bot.dispatcher.groups.values())
+    logger.info("Bot handlers registered: %s", handler_count)
+    if handler_count == 0:
+        logger.error("KOI HANDLER REGISTER NAHI HUA — commands ka jawab nahi aayega!")
+
+    warnings = []
+    try:
+        users = await bot.invoke(raw.functions.users.GetUsers(id=[raw.types.InputUserSelf()]))
+        raw_me = users[0]
+        if getattr(raw_me, "bot_nochats", False):
+            warnings.append(
+                "BotFather me 'Allow Groups' OFF hai — bot group me add nahi ho sakta. "
+                "@BotFather -> /setjoingroups -> Enable."
+            )
+        if not getattr(raw_me, "bot_chat_history", False):
+            logger.info(
+                "Bot privacy mode ON hai. Slash commands phir bhi aate hain; agar group "
+                "me command ka jawab na aaye to @BotFather -> /setprivacy -> Disable."
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Bot settings check nahi ho paye: %s", e)
+
+    dialogs = await warm_up_assistant_peers()
+    logger.info("Assistant ke %s chats load hue", dialogs)
+
+    try:
+        await bot.set_bot_commands([BotCommand(c, d) for c, d in _BOT_COMMANDS])
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Bot command menu set nahi ho paya: %s", e)
+
+    for w in warnings:
+        logger.warning(w)
+
+    if config.STARTUP_NOTIFY:
+        text = (
+            f"✅ VPlay v{__version__} start ho gaya.\n"
+            f"Bot: @{me.username}\nAssistant: {runtime.ASSISTANT_NAME} (id {assistant_me.id})\n"
+            f"Handlers: {handler_count}"
+        )
+        if warnings:
+            text += "\n\n⚠️ " + "\n⚠️ ".join(warnings)
+        try:
+            await bot.send_message(config.OWNER_ID, text)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Owner (%s) ko start message nahi bhej paya (%s). Owner ek baar bot ko "
+                "private me /start bheje.", config.OWNER_ID, e,
+            )
 
 
 async def _safe_stop(name: str, coro_factory) -> None:
@@ -44,6 +118,17 @@ async def main():
             assistant_me.username or assistant_me.first_name,
             assistant_me.id,
         )
+        runtime.BOT_USERNAME = me.username or ""
+        runtime.BOT_ID = me.id
+        runtime.ASSISTANT_ID = assistant_me.id
+        runtime.ASSISTANT_NAME = (
+            f"@{assistant_me.username}" if assistant_me.username else assistant_me.first_name
+        )
+        try:
+            await _startup_diagnostics(me, assistant_me)
+        except Exception:  # noqa: BLE001 - diagnostics must never stop the bot
+            logger.exception("Startup diagnostics failed")
+        logger.info("Ready — ab group me /vplay bhejein. Har command yahan log hoga.")
 
         await idle()
     finally:
