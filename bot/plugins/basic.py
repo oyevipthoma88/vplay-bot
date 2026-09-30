@@ -1,6 +1,7 @@
 from pyrogram import filters
 from pyrogram.types import Message
 
+from bot import __version__
 from bot.core.clients import bot
 from bot.utils.decorators import error_guard
 
@@ -32,7 +33,7 @@ HELP_TEXT = (
 )
 
 
-@bot.on_message(filters.command("start") & filters.private)
+@bot.on_message(filters.command("start"))
 @error_guard
 async def start_cmd(client, message: Message):
     await message.reply_text(START_TEXT)
@@ -47,4 +48,4 @@ async def help_cmd(client, message: Message):
 @bot.on_message(filters.command("ping"))
 @error_guard
 async def ping_cmd(client, message: Message):
-    await message.reply_text("Pong! Bot chal raha hai.")
+    await message.reply_text(f"Pong! Bot chal raha hai (v{__version__}).")

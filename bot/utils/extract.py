@@ -16,9 +16,13 @@ _URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 
 
 def _url_from_text(text: str):
+    """Pulls the first argument after the command and returns it if it
+    looks like a direct http(s) link. Extra words after the link are
+    ignored, so `/vplay https://x/y.mp4 please` still works.
+    """
     if not text:
         return None
-    parts = text.strip().split(maxsplit=1)
+    parts = text.strip().split()
     if len(parts) < 2:
         return None
     candidate = parts[1].strip()
@@ -28,9 +32,9 @@ def _url_from_text(text: str):
 
 
 def _replied_media(message: Message):
-    if not message.reply_to_message:
+    replied = getattr(message, "reply_to_message", None)
+    if not replied:
         return None
-    replied = message.reply_to_message
     return (
         replied.video
         or replied.audio
@@ -44,7 +48,10 @@ def _replied_media(message: Message):
 def _guess_extension(media) -> str:
     file_name = getattr(media, "file_name", None)
     if file_name and "." in file_name:
-        return "." + file_name.rsplit(".", 1)[-1]
+        ext = "." + file_name.rsplit(".", 1)[-1]
+        # Guard against absurd "extensions" from odd filenames.
+        if len(ext) <= 6 and ext[1:].isalnum():
+            return ext
     mime = getattr(media, "mime_type", "") or ""
     if "video" in mime:
         return ".mp4"
@@ -72,7 +79,14 @@ async def resolve_source(message: Message):
     os.makedirs(config.DOWNLOADS_DIR, exist_ok=True)
     local_name = f"{uuid.uuid4().hex}{_guess_extension(media)}"
     local_path = os.path.join(config.DOWNLOADS_DIR, local_name)
-    downloaded_path = await message.reply_to_message.download(file_name=local_path)
+
+    try:
+        downloaded_path = await message.reply_to_message.download(file_name=local_path)
+    except Exception as e:  # noqa: BLE001 - surfaced to the user as a reply
+        raise RuntimeError(f"File download nahi ho payi: {e}") from e
+
+    if not downloaded_path or not os.path.exists(downloaded_path):
+        raise RuntimeError("File download nahi ho payi — dobara try karein.")
 
     title = getattr(media, "file_name", None) or "Telegram media"
     return downloaded_path, title, False

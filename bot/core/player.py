@@ -3,6 +3,12 @@ seeking, which PyTgCalls itself does not expose directly: we cut a fresh
 local file starting at the requested offset with ffmpeg (fast stream-copy
 first, falling back to a re-encode if the source can't be copy-seeked),
 then hand that file to PyTgCalls like any other track.
+
+PyTgCalls renamed several methods between 1.x and 2.x (`join_group_call` ->
+`play`, `change_stream` -> `play`, `leave_group_call` -> `leave_call`,
+`mute_stream` -> `mute`, ...). Rather than pinning ourselves to one exact
+release, every call goes through `_safe_call`, which tries the known
+aliases in order and only fails once none of them exist.
 """
 import asyncio
 import os
@@ -23,6 +29,28 @@ _VIDEO_QUALITY = {
     "fhd_1080p": "FHD_1080p",
 }
 
+# Method-name aliases across PyTgCalls versions, most recent name first.
+_METHOD_ALIASES = {
+    "play": ("play", "join_group_call", "change_stream"),
+    "leave": ("leave_call", "leave_group_call"),
+    "pause": ("pause", "pause_stream"),
+    "resume": ("resume", "resume_stream"),
+    "mute": ("mute", "mute_stream"),
+    "unmute": ("unmute", "unmute_stream"),
+}
+
+# Serialises playback changes per chat so two commands racing (e.g. /vskip
+# fired twice) can't both mutate the same chat's state halfway through.
+_locks: dict = {}
+
+
+def _lock(chat_id: int) -> asyncio.Lock:
+    lock = _locks.get(chat_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _locks[chat_id] = lock
+    return lock
+
 
 def _video_quality():
     attr = _VIDEO_QUALITY.get(config.DEFAULT_VIDEO_QUALITY, "SD_480p")
@@ -37,28 +65,23 @@ def _audio_quality():
     return AudioQuality.HIGH
 
 
-async def _safe_call(method_name: str, *args, friendly_action: str = ""):
-    """Calls call_py.<method_name>(*args), with a clear error if this
-    PyTgCalls version doesn't expose that method under this name (library
-    APIs shift between versions — this fails loudly and usefully instead
-    of crashing with a bare AttributeError).
-    """
-    method = getattr(call_py, method_name, None)
-    if method is None:
-        raise RuntimeError(
-            f"PyTgCalls me `{method_name}` method nahi mila (action: "
-            f"{friendly_action or method_name}). Installed `py-tgcalls` "
-            f"version check karein — requirements.txt me version badalna "
-            f"pad sakta hai."
-        )
-    return await method(*args)
+async def _safe_call(action: str, *args):
+    """Calls the first PyTgCalls method matching `action`'s known aliases."""
+    for name in _METHOD_ALIASES.get(action, (action,)):
+        method = getattr(call_py, name, None)
+        if callable(method):
+            return await method(*args)
+    raise RuntimeError(
+        f"PyTgCalls me `{action}` ke liye koi known method nahi mila "
+        f"(tried: {', '.join(_METHOD_ALIASES.get(action, (action,)))}). "
+        f"Installed `py-tgcalls` version requirements.txt se match nahi kar raha."
+    )
 
 
-async def _start_stream(chat_id: int, track: Track, is_update: bool = False) -> None:
+async def _start_stream(chat_id: int, track: Track) -> None:
     stream = MediaStream(track.source, _audio_quality(), _video_quality())
-    method_name = "change_stream" if is_update else "play"
     try:
-        await _safe_call(method_name, chat_id, stream, friendly_action="playback start/update")
+        await _safe_call("play", chat_id, stream)
     except RuntimeError:
         raise
     except Exception as e:  # noqa: BLE001 - genuinely need the broad catch here
@@ -81,93 +104,129 @@ async def play_or_queue(chat_id: int, track: Track) -> bool:
     """Starts playing immediately if nothing is playing yet, otherwise adds
     to the queue. Returns True if playback started immediately.
     """
+    async with _lock(chat_id):
+        state = get_state(chat_id)
+        if state.current is None:
+            await _start_stream(chat_id, track)
+            return True
+        state.queue.append(track)
+        return False
+
+
+async def _advance(chat_id: int) -> Optional[Track]:
+    """Drops the current track and starts the next queued one (if any)."""
     state = get_state(chat_id)
-    if state.current is None:
-        await _start_stream(chat_id, track, is_update=False)
-        return True
-    state.queue.append(track)
-    return False
+    _cleanup_file(state.current)
+    state.current = None
+
+    while state.queue:
+        next_track = state.queue.pop(0)
+        try:
+            await _start_stream(chat_id, next_track)
+            return next_track
+        except Exception as e:  # noqa: BLE001 - skip a broken track, keep going
+            logger.warning("Track '%s' play nahi ho paya, skipping: %s", next_track.title, e)
+            _cleanup_file(next_track)
+
+    try:
+        await _safe_call("leave", chat_id)
+    except Exception:  # noqa: BLE001 - best-effort, state is cleared regardless
+        pass
+    clear_state(chat_id)
+    _locks.pop(chat_id, None)
+    return None
 
 
 async def skip(chat_id: int) -> Optional[Track]:
-    state = get_state(chat_id)
-    _cleanup_file(state.current)
-    if not state.queue:
-        try:
-            await _safe_call("leave_call", chat_id, friendly_action="leave call")
-        except Exception:
-            pass  # best-effort — we're clearing local state regardless
-        clear_state(chat_id)
-        return None
-    next_track = state.queue.pop(0)
-    await _start_stream(chat_id, next_track, is_update=True)
-    return next_track
+    async with _lock(chat_id):
+        return await _advance(chat_id)
 
 
 async def stop(chat_id: int) -> None:
-    state = get_state(chat_id)
-    _cleanup_file(state.current)
-    for track in state.queue:
-        _cleanup_file(track)
-    try:
-        await _safe_call("leave_call", chat_id, friendly_action="leave call")
-    except Exception:
-        pass  # best-effort
-    clear_state(chat_id)
+    async with _lock(chat_id):
+        state = get_state(chat_id)
+        _cleanup_file(state.current)
+        for track in state.queue:
+            _cleanup_file(track)
+        try:
+            await _safe_call("leave", chat_id)
+        except Exception:  # noqa: BLE001 - best-effort
+            pass
+        clear_state(chat_id)
+    _locks.pop(chat_id, None)
 
 
 async def pause(chat_id: int) -> None:
-    await _safe_call("pause", chat_id, friendly_action="pause")
     state = get_state(chat_id)
+    if state.current is None:
+        raise RuntimeError("Abhi kuch play nahi ho raha hai.")
+    if state.is_paused:
+        raise RuntimeError("Playback pehle se hi paused hai.")
+    await _safe_call("pause", chat_id)
     state.is_paused = True
     state.paused_at = time.time()
 
 
 async def resume(chat_id: int) -> None:
-    await _safe_call("resume", chat_id, friendly_action="resume")
     state = get_state(chat_id)
-    if state.is_paused and state.paused_at:
+    if state.current is None:
+        raise RuntimeError("Abhi kuch play nahi ho raha hai.")
+    if not state.is_paused:
+        raise RuntimeError("Playback already chal raha hai.")
+    await _safe_call("resume", chat_id)
+    if state.paused_at:
         state.paused_duration += time.time() - state.paused_at
     state.is_paused = False
     state.paused_at = None
 
 
 async def mute(chat_id: int) -> None:
-    await _safe_call("mute", chat_id, friendly_action="mute")
+    await _safe_call("mute", chat_id)
 
 
 async def unmute(chat_id: int) -> None:
-    await _safe_call("unmute", chat_id, friendly_action="unmute")
+    await _safe_call("unmute", chat_id)
 
 
 async def seek(chat_id: int, seconds: int) -> None:
-    state = get_state(chat_id)
-    track = state.current
-    if track is None:
-        raise RuntimeError("Abhi kuch play nahi ho raha hai.")
-    seconds = max(0, seconds)
+    async with _lock(chat_id):
+        state = get_state(chat_id)
+        track = state.current
+        if track is None:
+            raise RuntimeError("Abhi kuch play nahi ho raha hai.")
+        seconds = max(0, seconds)
 
-    seeked_path = await _cut_from(track.source, seconds)
-    new_track = Track(
-        source=seeked_path,
-        title=track.title,
-        requested_by=track.requested_by,
-        is_url=False,
-    )
-    old_source = track.source
-    old_was_url = track.is_url
-    await _start_stream(chat_id, new_track, is_update=True)
+        old_source = track.source
+        old_was_url = track.is_url
 
-    # started_at is shifted back so /vnowplaying keeps reporting an
-    # accurate elapsed time after the seek.
-    state.started_at = time.time() - seconds
-    state.paused_duration = 0.0
-
-    if not old_was_url and os.path.exists(old_source):
+        seeked_path = await _cut_from(old_source, seconds)
+        new_track = Track(
+            source=seeked_path,
+            title=track.title,
+            requested_by=track.requested_by,
+            is_url=False,
+        )
         try:
-            os.remove(old_source)
-        except OSError:
-            pass
+            await _start_stream(chat_id, new_track)
+        except Exception:
+            # The cut file is useless if we couldn't switch to it.
+            if os.path.exists(seeked_path):
+                try:
+                    os.remove(seeked_path)
+                except OSError:
+                    pass
+            raise
+
+        # started_at is shifted back so /vnowplaying keeps reporting an
+        # accurate elapsed time after the seek.
+        state.started_at = time.time() - seconds
+        state.paused_duration = 0.0
+
+        if not old_was_url and old_source != seeked_path and os.path.exists(old_source):
+            try:
+                os.remove(old_source)
+            except OSError:
+                pass
 
 
 async def _cut_from(source: str, offset_seconds: int) -> str:
@@ -198,22 +257,38 @@ async def _cut_from(source: str, offset_seconds: int) -> str:
             out_path,
         ]
         ok = await _run_ffmpeg(slow_cmd)
-        if not ok:
+        if not ok or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+            if os.path.exists(out_path):
+                try:
+                    os.remove(out_path)
+                except OSError:
+                    pass
             raise RuntimeError(
-                "Seek fail ho gaya — is media source par seek possible nahi lag raha."
+                "Seek fail ho gaya — is media source par seek possible nahi lag raha. "
+                "Ho sakta hai requested time media ki length se zyada ho."
             )
     return out_path
 
 
 async def _run_ffmpeg(cmd: list) -> bool:
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            "ffmpeg install nahi hai — seek ke liye ffmpeg chahiye. "
+            "(Heroku par Aptfile + apt buildpack check karein.)"
+        ) from e
     _, stderr = await process.communicate()
     if process.returncode != 0:
-        logger.warning("ffmpeg failed (%s): %s", cmd[0:2], stderr.decode(errors="ignore")[-500:])
+        logger.warning(
+            "ffmpeg failed (rc=%s): %s",
+            process.returncode,
+            (stderr or b"").decode(errors="ignore")[-500:],
+        )
         return False
     return True
 
@@ -224,3 +299,65 @@ def _cleanup_file(track: Optional[Track]) -> None:
             os.remove(track.source)
         except OSError:
             pass
+
+
+# --- Auto-advance when a track finishes --------------------------------
+# Without this the queue never moves on by itself: the stream just ends and
+# the bot sits in the call doing nothing until someone runs /vskip.
+
+
+async def _on_stream_end(_client, update) -> None:
+    chat_id = getattr(update, "chat_id", None)
+    if chat_id is None:
+        return
+    try:
+        async with _lock(chat_id):
+            next_track = await _advance(chat_id)
+    except Exception:  # noqa: BLE001 - a background handler must never die
+        logger.exception("Auto-advance failed for chat %s", chat_id)
+        return
+
+    from bot.core.clients import bot as bot_client
+
+    try:
+        if next_track:
+            await bot_client.send_message(chat_id, f"▶️ Ab chal raha hai: {next_track.title}")
+        else:
+            await bot_client.send_message(chat_id, "✅ Queue khatam — video chat se nikal gaya.")
+    except Exception:  # noqa: BLE001 - bot may not be able to post there
+        pass
+
+
+def _register_stream_end_handler() -> None:
+    # PyTgCalls moved this between `@on_stream_end()` (1.x / early 2.x) and
+    # `@on_update(filters.stream_end)` (2.1+). Try both, quietly.
+    try:
+        from pytgcalls import filters as pytgcalls_filters
+
+        flt = getattr(pytgcalls_filters, "stream_end", None)
+        if flt is not None:
+            if callable(flt):
+                try:
+                    flt = flt()
+                except TypeError:
+                    pass
+            call_py.on_update(flt)(_on_stream_end)
+            logger.debug("Registered stream_end via on_update filter")
+            return
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        call_py.on_stream_end()(_on_stream_end)
+        logger.debug("Registered stream_end via on_stream_end decorator")
+        return
+    except Exception:  # noqa: BLE001
+        pass
+
+    logger.warning(
+        "Stream-end handler register nahi ho paya — queue automatically "
+        "aage nahi badhegi, /vskip manually use karna padega."
+    )
+
+
+_register_stream_end_handler()
