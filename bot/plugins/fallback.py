@@ -60,6 +60,14 @@ if config.ASSISTANT_FALLBACK:
         if handler is None:
             return
 
+        # Only help out in chats where OUR bot is actually a member. The
+        # assistant usually sits in many groups that use other music bots —
+        # answering their /play would hijack them.
+        try:
+            await bot.get_chat_member(message.chat.id, "me")
+        except Exception:  # noqa: BLE001
+            return
+
         await asyncio.sleep(_WAIT_SECONDS)
         if is_seen(message) or not mark_seen(message):
             return  # the bot handled it
@@ -70,7 +78,7 @@ if config.ASSISTANT_FALLBACK:
             command, message.chat.id,
         )
 
-        run_client, run_message = assistant, message
+        run_client, run_message = assistant, message  # noqa: F841
         # Message ids are only shared between accounts in supergroups.
         is_super = getattr(message.chat.type, "name", "") == "SUPERGROUP"
         try:

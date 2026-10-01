@@ -10,7 +10,10 @@ import uuid
 
 from pyrogram.types import Message
 
+import time
+
 from bot import config
+from bot.logger import logger
 
 _URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 
@@ -70,6 +73,12 @@ async def resolve_source(message: Message):
         return url, title, True
 
     media = _replied_media(message)
+    text = (message.text or message.caption or "").strip()
+    if media is None and len(text.split()) > 1:
+        raise ValueError(
+            "Song name se search supported nahi hai — sirf direct link (http...) "
+            "ya kisi video/audio file par reply karke /vplay bhejein."
+        )
     if media is None:
         raise ValueError(
             "Kisi video/audio file par reply karke /vplay bhejein, ya phir "
@@ -80,8 +89,12 @@ async def resolve_source(message: Message):
     local_name = f"{uuid.uuid4().hex}{_guess_extension(media)}"
     local_path = os.path.join(config.DOWNLOADS_DIR, local_name)
 
+    size = getattr(media, "file_size", 0) or 0
+    logger.info("Download start: %s (%.1f MB)", getattr(media, "file_name", None) or "media", size / 1e6)
+    started = time.time()
     try:
         downloaded_path = await message.reply_to_message.download(file_name=local_path)
+        logger.info("Download done in %.1fs -> %s", time.time() - started, downloaded_path)
     except Exception as e:  # noqa: BLE001 - surfaced to the user as a reply
         raise RuntimeError(f"File download nahi ho payi: {e}") from e
 

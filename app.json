@@ -48,7 +48,7 @@
     },
     "ASSISTANT_FALLBACK": {
       "description": "true: agar bot ko group me command nahi milta to assistant account khud command chala dega.",
-      "value": "true",
+      "value": "false",
       "required": false
     },
     "STARTUP_NOTIFY": {

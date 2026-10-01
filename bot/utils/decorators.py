@@ -12,10 +12,12 @@ async def _try_reply(message: Message, text: str) -> None:
     """Replying can itself fail (deleted message, lost permissions). Never
     let that turn into a second, noisier crash.
     """
+    chat_id = getattr(message.chat, "id", "?")
     try:
         await message.reply_text(text)
-    except Exception:  # noqa: BLE001
-        logger.warning("Could not send reply in chat %s", getattr(message.chat, "id", "?"))
+        logger.info("Reply in chat %s: %s", chat_id, text[:150].replace("\n", " "))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not send reply in chat %s (%s): %s", chat_id, e, text[:100])
 
 
 def error_guard(func):
@@ -28,6 +30,7 @@ def error_guard(func):
         try:
             return await func(client, message, *args, **kwargs)
         except (ValueError, RuntimeError) as e:
+            logger.info("/%s -> user error: %s", func.__name__, e)
             await _try_reply(message, str(e) or "Kuch galat ho gaya.")
         except Exception as e:  # noqa: BLE001 - last line of defense
             logger.exception("Handler error in %s", func.__name__)
@@ -41,7 +44,8 @@ async def _is_authorised(client: Client, chat_id: int, user_id: int) -> bool:
         return True
     try:
         member = await client.get_chat_member(chat_id, user_id)
-    except Exception:  # noqa: BLE001 - not a member / can't check => not allowed
+    except Exception as e:  # noqa: BLE001 - not a member / can't check => not allowed
+        logger.warning("Admin check fail (chat %s, user %s): %s", chat_id, user_id, e)
         return False
     return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
 
@@ -66,6 +70,10 @@ def admin_only(func):
             await _try_reply(message, "Sirf group admins ye command use kar sakte hain.")
             return
         allowed = await _is_authorised(client, message.chat.id, message.from_user.id)
+        logger.info(
+            "Admin check: user %s in chat %s -> %s",
+            message.from_user.id, message.chat.id, "allowed" if allowed else "DENIED",
+        )
         if not allowed:
             await _try_reply(message, "Sirf group admins ye command use kar sakte hain.")
             return

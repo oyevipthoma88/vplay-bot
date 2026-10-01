@@ -6,6 +6,7 @@ from bot.core.clients import bot
 from bot.core.queue import Track, get_state
 from bot.utils.commands import cmd
 from bot.utils.decorators import admin_only, error_guard
+from bot.logger import logger
 from bot.utils.extract import resolve_source
 from bot.utils.formatting import format_duration, parse_time_to_seconds
 
@@ -33,10 +34,14 @@ def _register_private_hint(commands):
 @error_guard
 @admin_only
 async def vplay_cmd(client, message: Message):
+    chat_id = message.chat.id
+    logger.info("vplay[%s]: start", chat_id)
     status = await message.reply_text("Media ready kar raha hoon...")
     try:
-        await player_core.ensure_assistant_in_chat(message.chat.id)
+        await player_core.ensure_assistant_in_chat(chat_id)
+        logger.info("vplay[%s]: assistant chat me hai", chat_id)
         source, title, is_url = await resolve_source(message)
+        logger.info("vplay[%s]: source ready (%s) %s", chat_id, "link" if is_url else "file", title)
     except Exception:
         try:
             await status.delete()
@@ -60,6 +65,7 @@ async def vplay_cmd(client, message: Message):
         except Exception:  # noqa: BLE001
             pass
         raise
+    logger.info("vplay[%s]: %s", chat_id, "playing" if started else "queued")
     if started:
         await status.edit_text(f"▶️ Ab chal raha hai: {title}")
     else:
