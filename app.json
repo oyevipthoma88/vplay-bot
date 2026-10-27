@@ -55,6 +55,19 @@
       "description": "true: har start par OWNER_ID ko bot DM bhejega.",
       "value": "true",
       "required": false
+    },
+    "MONGO_DB_URI": {
+      "description": "MongoDB URI (stats/settings). Khali = in-memory.",
+      "required": false
+    },
+    "LOG_CHANNEL_ID": {
+      "description": "Log group/channel ID (e.g. -100...). Bot wahan admin ho.",
+      "required": false
+    },
+    "STREAM_PORT": {
+      "description": "Local 0s streamer port",
+      "value": "8000",
+      "required": false
     }
   },
   "formation": {

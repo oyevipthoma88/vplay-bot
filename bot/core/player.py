@@ -78,8 +78,17 @@ async def _safe_call(action: str, *args):
     )
 
 
-async def _start_stream(chat_id: int, track: Track) -> None:
-    stream = MediaStream(track.source, _audio_quality(), _video_quality())
+async def _start_stream(chat_id: int, track: Track, offset: int = 0) -> None:
+    if offset > 0:
+        try:
+            stream = MediaStream(
+                track.source, _audio_quality(), _video_quality(),
+                ffmpeg_parameters=f"-ss {int(offset)}",
+            )
+        except TypeError:
+            stream = MediaStream(track.source, _audio_quality(), _video_quality())
+    else:
+        stream = MediaStream(track.source, _audio_quality(), _video_quality())
     logger.info("Chat %s: stream start — %s", chat_id, track.title)
     try:
         await _safe_call("play", chat_id, stream)
@@ -253,6 +262,15 @@ async def seek(chat_id: int, seconds: int) -> None:
         if track is None:
             raise RuntimeError("Abhi kuch play nahi ho raha hai.")
         seconds = max(0, seconds)
+
+        # Streamed sources (links / 0s Telegram streams): seek instantly by
+        # restarting ffmpeg at the offset — the streamer serves HTTP Range,
+        # so nothing gets cut or downloaded.
+        if track.is_url:
+            await _start_stream(chat_id, track, offset=seconds)
+            state.started_at = time.time() - seconds
+            state.paused_duration = 0.0
+            return
 
         old_source = track.source
         old_was_url = track.is_url

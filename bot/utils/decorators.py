@@ -1,7 +1,9 @@
 import functools
+import traceback
 
 from pyrogram import Client
 from pyrogram.enums import ChatMemberStatus, ChatType
+from pyrogram.errors import ChatAdminRequired, FloodWait, PeerIdInvalid, UserNotParticipant
 from pyrogram.types import Message
 
 from bot import config
@@ -9,9 +11,6 @@ from bot.logger import logger
 
 
 async def _try_reply(message: Message, text: str) -> None:
-    """Replying can itself fail (deleted message, lost permissions). Never
-    let that turn into a second, noisier crash.
-    """
     chat_id = getattr(message.chat, "id", "?")
     try:
         await message.reply_text(text)
@@ -20,9 +19,21 @@ async def _try_reply(message: Message, text: str) -> None:
         logger.warning("Could not send reply in chat %s (%s): %s", chat_id, e, text[:100])
 
 
+def _friendly(e: Exception) -> str:
+    msg = str(e) or "Kuch galat ho gaya."
+    low = msg.lower()
+    if "no active group call" in low or "groupcall" in low and "not" in low:
+        return "⚠️ Video chat shuru nahi hai. Pehle group me video chat start karein."
+    if "usernotparticipant" in low:
+        return "⚠️ Assistant group me nahi hai. Bot ko 'Invite users via link' permission dein."
+    if "peer_id_invalid" in low:
+        return "⚠️ Group resolve nahi hua. Ek baar /vdebug bhejein, phir dobara try karein."
+    return f"⚠️ {msg}"
+
+
 def error_guard(func):
-    """Turns any exception raised by a handler into a friendly chat reply
-    instead of a silently-dropped update / a crash in the logs only.
+    """Any handler exception -> friendly reply + full traceback in logs +
+    crash report in the Log GC.
     """
 
     @functools.wraps(func)
@@ -31,10 +42,24 @@ def error_guard(func):
             return await func(client, message, *args, **kwargs)
         except (ValueError, RuntimeError) as e:
             logger.info("/%s -> user error: %s", func.__name__, e)
-            await _try_reply(message, str(e) or "Kuch galat ho gaya.")
+            await _try_reply(message, _friendly(e))
+        except FloodWait as fw:
+            await _try_reply(message, f"⏳ Telegram limit: {fw.value} second baad try karein.")
+        except UserNotParticipant:
+            await _try_reply(message, "⚠️ Assistant account group me nahi hai. Use add karein.")
+        except ChatAdminRequired:
+            await _try_reply(message, "⚠️ Bot/assistant ko admin permissions chahiye (Manage Video Chats).")
+        except PeerIdInvalid:
+            await _try_reply(message, "⚠️ Group abhi resolve nahi hua, kuch second baad dobara try karein.")
         except Exception as e:  # noqa: BLE001 - last line of defense
             logger.exception("Handler error in %s", func.__name__)
-            await _try_reply(message, f"Kuch error aa gaya: {e}")
+            try:
+                from bot.core.logger_gc import log_error
+
+                await log_error(getattr(message.chat, "id", 0), func.__name__, e, traceback.format_exc())
+            except Exception:  # noqa: BLE001
+                pass
+            await _try_reply(message, f"⚠️ Kuch error aa gaya: {e}")
 
     return wrapper
 
@@ -44,17 +69,13 @@ async def _is_authorised(client: Client, chat_id: int, user_id: int) -> bool:
         return True
     try:
         member = await client.get_chat_member(chat_id, user_id)
-    except Exception as e:  # noqa: BLE001 - not a member / can't check => not allowed
+    except Exception as e:  # noqa: BLE001
         logger.warning("Admin check fail (chat %s, user %s): %s", chat_id, user_id, e)
         return False
     return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
 
 
 def admin_only(func):
-    """Restricts a command to group admins + OWNER_ID, unless
-    AUTH_ONLY_ADMINS=false. Always allowed in private chats.
-    """
-
     @functools.wraps(func)
     async def wrapper(client: Client, message: Message, *args, **kwargs):
         if not config.AUTH_ONLY_ADMINS:
@@ -62,19 +83,11 @@ def admin_only(func):
         if message.chat and message.chat.type == ChatType.PRIVATE:
             return await func(client, message, *args, **kwargs)
         if not message.from_user:
-            # Anonymous admins / channel-signed posts: the sender is hidden,
-            # so we can't verify them. Treat as an admin only if the message
-            # comes from the chat itself (anonymous admin posts do).
             if getattr(message, "sender_chat", None):
                 return await func(client, message, *args, **kwargs)
             await _try_reply(message, "Sirf group admins ye command use kar sakte hain.")
             return
-        allowed = await _is_authorised(client, message.chat.id, message.from_user.id)
-        logger.info(
-            "Admin check: user %s in chat %s -> %s",
-            message.from_user.id, message.chat.id, "allowed" if allowed else "DENIED",
-        )
-        if not allowed:
+        if not await _is_authorised(client, message.chat.id, message.from_user.id):
             await _try_reply(message, "Sirf group admins ye command use kar sakte hain.")
             return
         return await func(client, message, *args, **kwargs)

@@ -18,7 +18,8 @@ from bot.plugins import diagnostics  # noqa: F401,E402
 from bot.plugins import fallback  # noqa: F401,E402
 
 from bot import __version__, config
-from bot.core import runtime
+from bot.core import runtime, streamer
+from bot.core.logger_gc import send_log
 from bot.core.player import warm_up_assistant_peers
 
 _BOT_COMMANDS = [
@@ -32,6 +33,7 @@ _BOT_COMMANDS = [
     ("vnowplaying", "Abhi kya chal raha hai"),
     ("vmute", "Mute"),
     ("vunmute", "Unmute"),
+    ("stats", "Bot stats"),
     ("vdebug", "Bot/assistant status"),
     ("ping", "Bot alive check"),
     ("help", "Sab commands"),
@@ -110,6 +112,8 @@ async def main():
         await call_py.start()
         started_calls = True
 
+        await streamer.start_streamer()
+
         me = await bot.get_me()
         assistant_me = await assistant.get_me()
         logger.info(
@@ -128,11 +132,16 @@ async def main():
             await _startup_diagnostics(me, assistant_me)
         except Exception:  # noqa: BLE001 - diagnostics must never stop the bot
             logger.exception("Startup diagnostics failed")
+        try:
+            await send_log(f"🚀 <b>VPlay v{__version__} start</b>\nBot: @{me.username}\n⚡ 0s streamer ON")
+        except Exception:  # noqa: BLE001
+            pass
         logger.info("Ready — ab group me /vplay bhejein. Har command yahan log hoga.")
 
         await idle()
     finally:
         logger.info("Shutting down...")
+        await _safe_stop("streamer", streamer.stop_streamer)
         if started_calls:
             await _safe_stop("pytgcalls", lambda: call_py.stop())
         if started_assistant:
