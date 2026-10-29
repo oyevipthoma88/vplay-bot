@@ -23,12 +23,15 @@ from bot.core.logger_gc import send_log
 from bot.core.player import warm_up_assistant_peers
 
 _BOT_COMMANDS = [
+    ("start", "Bot start karein"),
     ("vplay", "Video/audio par reply karke ya link ke saath play"),
     ("vpause", "Pause"),
     ("vresume", "Resume"),
     ("vskip", "Agla track"),
     ("vseek", "Seek — /vseek 90 ya 1:30"),
     ("vstop", "Stop aur video chat chhodo"),
+    ("vloop", "Current track repeat ON/OFF"),
+    ("vshuffle", "Queue shuffle"),
     ("vqueue", "Queue dekho"),
     ("vnowplaying", "Abhi kya chal raha hai"),
     ("vmute", "Mute"),

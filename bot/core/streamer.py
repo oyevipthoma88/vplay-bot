@@ -67,9 +67,11 @@ async def _handle_stream(request: web.Request) -> web.StreamResponse:
         try:
             if a:
                 start = int(a)
-            if b:
-                end = min(int(b), file_size - 1)
-            status = 206
+                if b:
+                    end = min(int(b), file_size - 1)
+            elif b and file_size:  # suffix range: last N bytes
+                start = max(0, file_size - int(b))
+            status = 206 if file_size else 200
         except ValueError:
             start = 0
     if file_size and (start >= file_size or end < start):
@@ -116,7 +118,7 @@ async def start_streamer() -> None:
     if _runner:
         return
     app = web.Application()
-    app.router.add_route("GET", "/stream/{chat_id}/{message_id}", _handle_stream)
+    app.router.add_get("/stream/{chat_id}/{message_id}", _handle_stream)  # also serves HEAD
     _runner = web.AppRunner(app)
     await _runner.setup()
     await web.TCPSite(_runner, "127.0.0.1", _PORT).start()

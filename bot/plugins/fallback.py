@@ -40,6 +40,8 @@ COMMANDS = {
     "vcurrent": player.vnowplaying_cmd,
     "vmute": player.vmute_cmd,
     "vunmute": player.vunmute_cmd,
+    "vloop": player.vloop_cmd,
+    "vshuffle": player.vshuffle_cmd,
 }
 
 _WAIT_SECONDS = 4

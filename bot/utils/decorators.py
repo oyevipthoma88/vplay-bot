@@ -22,7 +22,9 @@ async def _try_reply(message: Message, text: str) -> None:
 def _friendly(e: Exception) -> str:
     msg = str(e) or "Kuch galat ho gaya."
     low = msg.lower()
-    if "no active group call" in low or "groupcall" in low and "not" in low:
+    if msg.startswith("⚠️"):
+        return msg
+    if "no active group call" in low or ("groupcall" in low and "not" in low):
         return "⚠️ Video chat shuru nahi hai. Pehle group me video chat start karein."
     if "usernotparticipant" in low:
         return "⚠️ Assistant group me nahi hai. Bot ko 'Invite users via link' permission dein."

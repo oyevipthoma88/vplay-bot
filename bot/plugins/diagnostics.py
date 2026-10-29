@@ -41,7 +41,7 @@ async def _status_of(client, chat_id, user_id):
 @error_guard
 async def vdebug_cmd(client, message: Message):
     lines = [
-        "**VPlay debug**",
+        "🩺 <b>VPlay debug</b>",
         f"Bot: @{runtime.BOT_USERNAME} (id {runtime.BOT_ID})",
         f"Assistant: {runtime.ASSISTANT_NAME} (id {runtime.ASSISTANT_ID})",
         f"Chat: {message.chat.id} ({getattr(message.chat.type, 'name', '?')})",
@@ -62,4 +62,19 @@ async def vdebug_cmd(client, message: Message):
             lines.append(
                 f"  manage video chats: {getattr(priv, 'can_manage_video_chats', '?')}"
             )
+        try:
+            from pyrogram import raw
+            peer = await assistant.resolve_peer(message.chat.id)
+            if isinstance(peer, raw.types.InputPeerChannel):
+                full = await assistant.invoke(raw.functions.channels.GetFullChannel(
+                    channel=raw.types.InputChannel(channel_id=peer.channel_id, access_hash=peer.access_hash)))
+            else:
+                full = await assistant.invoke(raw.functions.messages.GetFullChat(chat_id=peer.chat_id))
+            on = getattr(full.full_chat, "call", None) is not None
+            lines.append(f"Video chat: {'✅ ON' if on else '❌ OFF'}")
+        except Exception as e:  # noqa: BLE001
+            lines.append(f"Video chat: check fail ({type(e).__name__})")
+        from bot.core.queue import get_state
+        st = get_state(message.chat.id)
+        lines.append(f"Player: {'▶️ ' + st.current.title if st.current else 'idle'} · queue {len(st.queue)}")
     await message.reply_text("\n".join(lines))

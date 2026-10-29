@@ -1,52 +1,74 @@
-from pyrogram.types import Message
+import time
+
+from pyrogram import filters
+from pyrogram.errors import MessageNotModified
+from pyrogram.types import CallbackQuery, Message
 
 from bot import __version__, config
 from bot.core.clients import bot
-from bot.database import get_stats, set_log_channel
+from bot.core.queue import active_chats
+from bot.database import add_served_user, get_stats, set_log_channel
+from bot.utils import ui
 from bot.utils.commands import cmd
 from bot.utils.decorators import error_guard
+from bot.utils.formatting import format_duration
 
-START_TEXT = (
-    "<b>Namaste! Main VPlay hoon — video-chat player bot.</b>\n\n"
-    "⚡ Koi bhi video/audio, chahe 3 GB ki movie ho, <b>turant (0 sec)</b> stream hoti hai — "
-    "pehle download nahi hoti.\n\n"
-    "1. Group me video chat start karein\n"
-    "2. Assistant ko admin banayein (Manage Video Chats)\n"
-    "3. File par reply karke <code>/vplay</code> bhejein\n\n"
-    "/help se saari commands dekhein."
-)
-
-HELP_TEXT = (
-    "<b>🎬 Playback</b>\n"
-    "/vplay — file par reply karke ya <code>/vplay &lt;link&gt;</code>\n"
-    "/vpause · /vresume · /vskip · /vstop\n"
-    "/vseek &lt;sec ya mm:ss&gt; — aage/peeche\n"
-    "/vqueue — queue list\n"
-    "/vnowplaying — abhi kya chal raha hai\n"
-    "/vmute · /vunmute\n\n"
-    "<b>🛠 System</b>\n"
-    "/stats — chats, users, plays\n"
-    "/setlog &lt;chat_id&gt; — log group set (owner)\n"
-    "/ping · /vdebug"
-)
+_BOOT = time.time()
 
 
 @bot.on_message(cmd("start"))
 @error_guard
 async def start_cmd(client, message: Message):
-    await message.reply_text(START_TEXT)
+    if message.chat.type.name == "PRIVATE":
+        if message.from_user:
+            await add_served_user(message.from_user.id, message.from_user.first_name or "")
+        name = message.from_user.first_name if message.from_user else ""
+        await message.reply_text(ui.start_text(name), reply_markup=ui.start_markup(),
+                                 disable_web_page_preview=True)
+    else:
+        await message.reply_text(ui.group_start_text(), reply_markup=ui.help_markup("main", False))
 
 
 @bot.on_message(cmd("help"))
 @error_guard
 async def help_cmd(client, message: Message):
-    await message.reply_text(HELP_TEXT)
+    private = message.chat.type.name == "PRIVATE"
+    await message.reply_text(ui.help_text("main"), reply_markup=ui.help_markup("main", private))
+
+
+@bot.on_callback_query(filters.regex(r"^ui_(start|close|help_\w+)$"))
+async def ui_buttons(client, query: CallbackQuery):
+    data = query.data[3:]
+    try:
+        if data == "close":
+            await query.message.delete()
+        elif data == "start":
+            await query.message.edit_text(ui.start_text(query.from_user.first_name),
+                                          reply_markup=ui.start_markup(),
+                                          disable_web_page_preview=True)
+        else:
+            page = data[len("help_"):]
+            private = query.message.chat.type.name == "PRIVATE"
+            await query.message.edit_text(ui.help_text(page), reply_markup=ui.help_markup(page, private))
+        await query.answer()
+    except MessageNotModified:
+        await query.answer()
+    except Exception:  # noqa: BLE001
+        await query.answer("Ye message ab edit nahi ho sakta.", show_alert=True)
 
 
 @bot.on_message(cmd("ping"))
 @error_guard
 async def ping_cmd(client, message: Message):
-    await message.reply_text(f"🏓 Pong! VPlay v{__version__} chal raha hai.")
+    t0 = time.perf_counter()
+    m = await message.reply_text("🏓 …")
+    ms = (time.perf_counter() - t0) * 1000
+    await m.edit_text(
+        f"🏓 <b>Pong!</b> <code>{ms:.0f} ms</code>\n"
+        f"⏱ Uptime: <code>{format_duration(int(time.time() - _BOOT))}</code>\n"
+        f"🎬 Active calls: <code>{active_chats()}</code>\n"
+        f"<i>VPlay v{__version__}</i>"
+    )
 
 
 @bot.on_message(cmd("stats"))
@@ -58,7 +80,8 @@ async def stats_cmd(client, message: Message):
         f"🗄 Database: {'✅ MongoDB' if s['is_mongo'] else '⚠️ In-memory (MONGO_DB_URI set karein)'}\n"
         f"👥 Chats: <code>{s['total_chats']}</code>\n"
         f"👤 Users: <code>{s['total_users']}</code>\n"
-        f"🎬 Plays: <code>{s['total_plays']}</code>"
+        f"🎬 Plays: <code>{s['total_plays']}</code>\n"
+        f"📡 Active calls: <code>{active_chats()}</code>"
     )
 
 
@@ -77,6 +100,10 @@ async def setlog_cmd(client, message: Message):
     except ValueError:
         await message.reply_text("Chat ID number hona chahiye.")
         return
-    await bot.send_message(channel_id, "✅ VPlay log group set ho gaya.")
+    try:
+        await bot.send_message(channel_id, "✅ VPlay log group set ho gaya.")
+    except Exception as e:  # noqa: BLE001
+        await message.reply_text(f"⚠️ Bot us chat me message nahi bhej paya: {e}\nBot ko wahan admin banayein.")
+        return
     await set_log_channel(channel_id)
     await message.reply_text(f"✅ Log group set: <code>{channel_id}</code>")

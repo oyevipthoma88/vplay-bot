@@ -18,13 +18,16 @@ async def send_log(text: str) -> None:
         logger.warning("Log channel %s me message nahi gaya: %s", channel_id, e)
 
 
-async def log_play(chat_title, chat_id, user_name, user_id, title, is_url) -> None:
+_MODES = {"stream": "0s MTProto stream", "link": "Direct link", "file": "Local file"}
+
+
+async def log_play(chat_title, chat_id, user_name, user_id, title, mode) -> None:
     await send_log(
         "🎬 <b>#VPLAY</b>\n"
         f"📍 <b>Chat:</b> {html.escape(chat_title)} [<code>{chat_id}</code>]\n"
         f"👤 <b>User:</b> {html.escape(user_name)} [<code>{user_id}</code>]\n"
         f"🎞 <b>Media:</b> <i>{html.escape(title)}</i>\n"
-        f"⚡ <b>Mode:</b> {'Direct link' if is_url else '0s MTProto stream'}"
+        f"⚡ <b>Mode:</b> {_MODES.get(mode, mode)}"
     )
 
 
