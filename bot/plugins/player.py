@@ -1,3 +1,4 @@
+import asyncio
 import html
 import os
 
@@ -60,8 +61,30 @@ def _brand_thumb(path: str) -> str:
     return path
 
 
+_branded_cache = {}
+
+
+async def _brand_thumb_async(path: str) -> str:
+    """NON-BLOCKING branding — Pillow runs in executor, NOT the event loop.
+
+    ROOT FIX for mid-stream audio stutter: synchronous Image.open()/save()
+    froze the asyncio loop for ~6s, starving the ffmpeg audio buffer.
+    """
+    if path in _branded_cache:
+        return _branded_cache[path]
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _brand_thumb, path)
+        _branded_cache[path] = result
+        return result
+    except Exception as e:
+        logger.warning("brand_thumb_async fail: %s", e)
+        return path
+
+
 async def _send_photo_card(chat_id: int, thumb_id: str, text: str, markup) -> Message:
     """Send photo card. On THUMBNAIL->PHOTO mismatch, download and reupload."""
+    await asyncio.sleep(1.0)  # let stream buffer stabilize (non-blocking)
     try:
         return await bot.send_photo(chat_id, thumb_id, caption=text, reply_markup=markup, parse_mode=ParseMode.HTML)
     except Exception as e:
@@ -72,7 +95,7 @@ async def _send_photo_card(chat_id: int, thumb_id: str, text: str, markup) -> Me
             try:
                 path = await bot.download_media(thumb_id)
                 if path:
-                    path = _brand_thumb(path)
+                    path = await _brand_thumb_async(path)
                     return await bot.send_photo(chat_id, path, caption=text, reply_markup=markup, parse_mode=ParseMode.HTML)
             except Exception as dl_err:
                 logger.warning("thumbnail download fail: %s", dl_err)

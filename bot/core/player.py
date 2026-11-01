@@ -149,8 +149,8 @@ def _ffmpeg_params(offset: int = 0) -> str:
         "-max_delay", "0",
         "-probesize", "5000000",
         "-analyzeduration", "5000000",
-        "-thread_queue_size", "512",
-        "-threads", str(max(1, threads)),
+        "-thread_queue_size", "1024",
+        "-threads", str(max(2, threads)),
     ]
     if offset > 0:
         parts += ["-ss", str(int(offset))]
