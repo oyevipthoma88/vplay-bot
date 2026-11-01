@@ -1,1 +1,1 @@
-worker: python3 -u -m bot
+worker: bash -c 'for d in /app/.apt/usr/lib/*/pulseaudio /app/.apt/usr/lib/x86_64-linux-gnu/pulseaudio /app/.apt/usr/lib/pulseaudio /usr/lib/*/pulseaudio; do [ -d "$d" ] && export LD_LIBRARY_PATH="$d:${LD_LIBRARY_PATH:-}"; done; exec python3 -u -m bot'
