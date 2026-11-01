@@ -129,17 +129,19 @@ def start_text(first_name: str, stats: dict = None) -> str:
 
 
 def start_markup(include_owner: bool = True) -> Markup:
+    P = _style("primary")
+    G = _style("success")
     rows = []
     if runtime.BOT_USERNAME:
         rows.append([_url_btn(
             "➕ Add to Group",
             f"https://t.me/{runtime.BOT_USERNAME}?startgroup=true"
             "&admin=manage_video_chats+invite_users+delete_messages",
-            style=_style("success"),
+            style=G,
         )])
     rows.append([
-        _btn("📖 Commands", "ui_help_main", style=_style("primary")),
-        _btn("🎛 Features", "ui_features", style=_style("primary")),
+        _btn("📖 Commands", "ui_help_main", style=P),
+        _btn("🎛 Features", "ui_features", style=P),
     ])
     _update = getattr(config, "UPDATE_CHANNEL", None) or (
         f"https://t.me/{runtime.BOT_USERNAME}" if runtime.BOT_USERNAME else None
@@ -147,12 +149,12 @@ def start_markup(include_owner: bool = True) -> Markup:
     _support = getattr(config, "SUPPORT_GROUP", None) or f"tg://user?id={config.OWNER_ID}"
     _row = []
     if _update:
-        _row.append(_url_btn("📢 Updates", _update))
-    _row.append(_url_btn("💬 Support", _support))
+        _row.append(_url_btn("📢 Updates", _update, style=P))
+    _row.append(_url_btn("💬 Support", _support, style=P))
     if _row:
         rows.append(_row)
     if include_owner:
-        rows.append([_url_btn("👤 Owner", f"tg://user?id={config.OWNER_ID}")])
+        rows.append([_url_btn("👤 Owner", f"tg://user?id={config.OWNER_ID}", style=P)])
     return Markup(rows)
 
 
@@ -181,18 +183,22 @@ def features_text() -> str:
 
 
 def features_markup() -> Markup:
+    P = _style("primary")
+    G = _style("success")
+    D = _style("danger")
     rows = []
     if runtime.BOT_USERNAME:
         _share = (
             f"https://t.me/share/url?url=https://t.me/{runtime.BOT_USERNAME}"
             "&text=Try%20VPlay%20%E2%80%94%20instant%20group%20video%20streaming"
         )
-        rows.append([_url_btn("🔗 Share VPlay", _share, style=_style("success"))])
+        rows.append([_url_btn("🔗 Share VPlay", _share, style=G)])
     rows.append([
-        _btn("⬅️ Back", "ui_start", style=_style("primary")),
-        _btn("❌ Close", "ui_close", style=_style("danger")),
+        _btn("⬅️ Back", "ui_start", style=P),
+        _btn("❌ Close", "ui_close", style=D),
     ])
     return Markup(rows)
+
 
 
 def is_owner_button_error(e: BaseException) -> bool:
@@ -276,18 +282,28 @@ def help_text(page: str = "main") -> str:
 
 
 def help_markup(page: str = "main", show_back_to_start: bool = True) -> Markup:
+    P = _style("primary")
+    D = _style("danger")
     if page == "main":
         rows = [
-            [_btn("🎬 Playback", "ui_help_play", style=_style("primary")),
-             _btn("📜 Queue", "ui_help_queue", style=_style("primary"))],
-            [_btn("🛠 System", "ui_help_system", style=_style("primary")),
-             _btn("❓ Setup", "ui_help_setup", style=_style("primary"))],
+            [_btn("🎬 Playback", "ui_help_play", style=P),
+             _btn("📜 Queue", "ui_help_queue", style=P)],
+            [_btn("🛠 System", "ui_help_system", style=P),
+             _btn("❓ Setup", "ui_help_setup", style=P)],
         ]
         if show_back_to_start:
-            rows.append([_btn("⬅️ Back", "ui_start", style=_style("primary"))])
+            rows.append([
+                _btn("⬅️ Back", "ui_start", style=P),
+                _btn("❌ Close", "ui_close", style=D),
+            ])
+        else:
+            rows.append([_btn("❌ Close", "ui_close", style=D)])
         return Markup(rows)
-    return Markup([[_btn("⬅️ Back", "ui_help_main", style=_style("primary")),
-                    _btn("❌ Close", "ui_close", style=_style("danger"))]])
+    return Markup([[
+        _btn("⬅️ Back", "ui_help_main", style=P),
+        _btn("❌ Close", "ui_close", style=D),
+    ]])
+
 
 
 # --- Player card --------------------------------------------------------
@@ -352,13 +368,10 @@ def player_markup(chat_id: int, state: ChatState = None) -> Markup:
     )
     c = chat_id
 
-    # Color scheme: primary (blue) = play/pause; danger (red) = stop/close;
-    # success (green) = loop ON. Others default grey.
     S_PRIMARY = _style("primary")
     S_SUCCESS = _style("success")
     S_DANGER = _style("danger")
 
-    S_MUTED = S_DANGER if muted else None
     return Markup([
         [
             _btn("⏪ 10s", f"cb_back_{c}", style=S_PRIMARY),
@@ -371,17 +384,18 @@ def player_markup(chat_id: int, state: ChatState = None) -> Markup:
             _btn("⏭ Skip", f"cb_skip_{c}", style=S_PRIMARY),
             _btn("⏹ Stop", f"cb_stop_{c}", style=S_DANGER),
             _btn(f"🔁 Loop: {_lm_label}", f"cb_loop_{c}",
-                 style=S_SUCCESS if looping else None),
+                 style=S_SUCCESS if looping else S_PRIMARY),
         ],
         [
             _btn("🔊 Unmute" if muted else "🔇 Mute",
                  f"cb_{'unmute' if muted else 'mute'}_{c}",
-                 style=S_MUTED),
-            _btn("📜 Queue", f"cb_queue_{c}"),
-            _btn("🔄 Refresh", f"cb_refresh_{c}"),
+                 style=S_DANGER if muted else S_PRIMARY),
+            _btn("📜 Queue", f"cb_queue_{c}", style=S_PRIMARY),
+            _btn("🔄 Refresh", f"cb_refresh_{c}", style=S_PRIMARY),
         ],
         [_btn("❌ Close card", f"cb_close_{c}", style=S_DANGER)],
     ])
+
 
 
 def queue_markup(chat_id: int) -> Markup:
@@ -390,10 +404,11 @@ def queue_markup(chat_id: int) -> Markup:
     return Markup([
         [
             _btn("🔙 Now Playing", f"cb_refresh_{c}", style=_style("primary")),
-            _btn("🔄 Refresh", f"cb_queue_{c}"),
+            _btn("🔄 Refresh", f"cb_queue_{c}", style=_style("primary")),
         ],
         [_btn("❌ Close", f"cb_close_{c}", style=_style("danger"))],
     ])
+
 
 
 def queued_card(track: Track, position: int) -> str:
@@ -473,22 +488,25 @@ def owner_panel_markup() -> Markup:
     from bot.database.owner_data import get_start_pic, is_maintenance
     _pic_set = bool(get_start_pic())
     _maint = is_maintenance()
+    P = _style("primary")
+    D = _style("danger")
     return Markup([
         [
-            _btn("📊 Stats", "own_stats", style=_style("primary")),
-            _btn("📢 Broadcast", "own_broadcast", style=_style("primary")),
+            _btn("📊 Stats", "own_stats", style=P),
+            _btn("📢 Broadcast", "own_broadcast", style=P),
         ],
         [
-            _btn("🖼 Start Pic", "own_start_pic", style=_style("primary")),
-            _btn("🎬 Default Thumb", "own_thumb", style=_style("primary")),
+            _btn("🖼 Start Pic", "own_start_pic", style=P),
+            _btn("🎬 Default Thumb", "own_thumb", style=P),
         ],
         [
-            _btn("⚙️ Maintenance", "own_maintenance", style=_style("danger") if _maint else None),
-            _btn("📝 Log Group", "own_log_group"),
+            _btn("⚙️ Maintenance", "own_maintenance", style=(D if _maint else P)),
+            _btn("📝 Log Group", "own_log_group", style=P),
         ],
         [
-            _btn("🔄 Restart", "own_restart"),
-            _btn("❌ Close", "own_close", style=_style("danger")),
+            _btn("🔄 Restart", "own_restart", style=P),
+            _btn("❌ Close", "own_close", style=D),
         ],
     ])
+
 
