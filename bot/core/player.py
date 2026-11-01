@@ -542,30 +542,11 @@ async def seek(chat_id: int, seconds: int) -> int:
                 "itna aage seek nahi ho sakta."
             )
         was_paused = state.is_paused
-
-        # Streamed sources (links / 0s Telegram streams): seek instantly by
-        # restarting ffmpeg at the offset — the streamer serves HTTP Range.
-        if track.is_url:
-            await _start_stream(chat_id, track, offset=seconds)
-            # SEEK FIX: elapsed() ko naya position dikhane ke liye
-            state.started_at = time.time() - seconds
-        else:
-            old_source = track.source
-            seeked_path = await _cut_from(old_source, seconds)
-            new_track = Track(
-                source=seeked_path, title=track.title, requested_by=track.requested_by,
-                is_url=False, duration=track.duration, mode=track.mode,
-                is_video=track.is_video, requested_by_id=track.requested_by_id,
-            )
-            try:
-                await _start_stream(chat_id, new_track)
-            except Exception:
-                _remove(seeked_path)
-                raise
-            state.started_at = time.time() - seconds
-            if old_source != seeked_path:
-                _remove(old_source)
-
+        # Local file + URL dono ke liye ek hi raasta: ffmpeg_parameters="-ss N"
+        # (pehle local file ke liye _cut_from se poori file cut hoti thi — slow
+        #  aur temp files bhi banti thi. Ab instant seek.)
+        await _start_stream(chat_id, track, offset=seconds)
+        state.started_at = time.time() - seconds
         if was_paused:
             try:
                 await _safe_call("pause", chat_id)

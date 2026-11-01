@@ -177,7 +177,7 @@ async def vstop_cmd(client, message: Message):
     await message.reply_text(f"⏹ <b>Stopped</b> by {html.escape(who)} — video chat chhod di.")
 
 
-@bot.on_message(cmd("vseek") & _GROUP)
+@bot.on_message(cmd(["vseek", "seek"]) & _GROUP)
 @error_guard
 @admin_only
 async def vseek_cmd(client, message: Message):
@@ -394,6 +394,28 @@ _register_private_hint(
     [
         "vplay", "play", "vpause", "vresume", "vskip", "vstop", "vend",
         "vseek", "vqueue", "vplaylist", "vnowplaying", "vnp", "vcurrent",
-        "vmute", "vunmute", "vloop", "vshuffle",
+        "vmute", "vunmute", "vloop", "vshuffle", "seek",
     ]
 )
+
+# --- Welcome when bot is added to a group --------------------------------
+
+from pyrogram import filters as _filters
+from pyrogram.types import Message as _Message
+
+
+@bot.on_message(_filters.new_chat_members)
+async def on_bot_added(client, message: _Message):
+    me = getattr(client, "me", None) or getattr(bot, "me", None)
+    if not me:
+        return
+    if any(getattr(m, "is_self", False) or m.id == me.id for m in message.new_chat_members):
+        try:
+            await message.reply_text(
+                "👋 <b>VPlay add karne ke liye shukriya!</b>\n\n"
+                "Video chat start karein, phir <code>/vplay</code> bhejein.\n"
+                "<b>Commands:</b> /vplay, /vseek, /vpause, /vresume, /vskip, /vstop, /vqueue, /vloop"
+            )
+        except Exception:
+            pass
+

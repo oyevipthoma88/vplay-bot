@@ -149,13 +149,16 @@ def now_playing_card(state: ChatState, header: str = "🎬 <b>Ab chal raha hai</
         flags.append("🔇 Muted")
     if state.loop:
         flags.append("🔁 Loop")
+
+    _title = t.title if len(t.title) <= 60 else t.title[:57] + "…"
     _remaining = max(0, total - elapsed) if total else 0
+    _percent = f"  <b>{int((elapsed / total) * 100)}%</b>" if total else ""
     time_line = (
         f"<code>{format_duration(elapsed)} {progress_bar(elapsed, total)} "
-        f"{format_duration(total) if total else 'LIVE'}</code>"
+        f"{format_duration(total) if total else 'LIVE'}</code>{_percent}"
         + (f"  <i>⏳ {format_duration(_remaining)} baki</i>" if total else "")
     )
-    _title = t.title if len(t.title) <= 60 else t.title[:57] + "…"
+
     lines = [
         header,
         "",
@@ -174,7 +177,6 @@ def now_playing_card(state: ChatState, header: str = "🎬 <b>Ab chal raha hai</
         else:
             lines.append(f"⏭ <b>Next:</b> {_nxt}")
     return "\n".join(lines)
-
 
 def player_markup(chat_id: int, state: ChatState = None) -> Markup:
     paused = bool(state and state.is_paused)
