@@ -44,6 +44,12 @@ _BOT_COMMANDS = [
     ("stats", "Bot stats"),
     ("vdebug", "Bot/assistant status"),
     ("ping", "Bot alive check"),
+    ("owner", "Owner panel (owner only)"),
+    ("admin", "Owner panel alias"),
+    ("vplayforce", "Force play — queue bypass"),
+    ("seekback", "Peeche seek — /seekback 30 ya 1m"),
+    ("vvolume", "Volume 1-200"),
+    ("id", "Aapka Telegram ID + chat ID"),
     ("help", "Sab commands"),
 ]
 
@@ -51,6 +57,13 @@ _BOT_COMMANDS = [
 async def _startup_diagnostics(me, assistant_me) -> None:
     handler_count = sum(len(g) for g in bot.dispatcher.groups.values())
     logger.info("Bot handlers registered: %s", handler_count)
+    logger.info(
+        "Owner config — OWNER_ID=%s OWNER_USERNAME=%s SUPPORT_URL=%s UPDATE_URL=%s",
+        config.OWNER_ID,
+        getattr(config, "OWNER_USERNAME", None),
+        getattr(config, "SUPPORT_URL", None),
+        getattr(config, "UPDATE_URL", None),
+    )
     if handler_count == 0:
         logger.error("KOI HANDLER REGISTER NAHI HUA — commands ka jawab nahi aayega!")
 
@@ -114,6 +127,11 @@ async def main():
     try:
         await bot.start()
         started_bot = True
+        try:
+            from bot.database.owner_data import hydrate as _hydrate_owner
+            await _hydrate_owner()
+        except Exception as _e:  # noqa: BLE001
+            logger.warning("Owner data hydrate fail: %s", _e)
 
         await assistant.start()
         started_assistant = True

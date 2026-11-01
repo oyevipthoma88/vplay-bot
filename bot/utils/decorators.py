@@ -75,6 +75,12 @@ def _friendly(e: Exception) -> str:
     return f"⚠️ {msg[:300]}"
 
 
+_MAINT_BYPASS = {
+    "owner", "panel", "admin", "ownersettings",
+    "start", "help", "ping", "id", "stats", "vdebug",
+}
+
+
 async def _check_maintenance(message) -> bool:
     """Returns True if allowed to proceed, False if blocked."""
     try:
@@ -83,6 +89,11 @@ async def _check_maintenance(message) -> bool:
         return True
     if not is_maintenance():
         return True
+    _text = (getattr(message, "text", "") or getattr(message, "caption", "") or "").strip()
+    if _text[:1] in ("/", "!"):
+        _cmd = _text[1:].split()[0].split("@")[0].lower() if len(_text) > 1 else ""
+        if _cmd in _MAINT_BYPASS:
+            return True
     user_id = getattr(getattr(message, "from_user", None), "id", 0)
     if user_id == config.OWNER_ID:
         return True

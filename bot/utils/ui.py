@@ -110,10 +110,7 @@ _MODE_LABEL = {
 
 
 def start_text(first_name: str, stats: dict = None) -> str:
-    """Premium start card: hero + blockquote pitch + italic tip.
-
-    `stats` kept for backward compatibility but intentionally NOT shown.
-    """
+    """Premium start card — hero, blockquote pitch, live status, tip."""
     _name = html.escape((first_name or "dost").strip()[:32]) or "dost"
     return "\n".join([
         f"<b>👋 {_greeting()}, {_name}</b>",
@@ -121,9 +118,11 @@ def start_text(first_name: str, stats: dict = None) -> str:
         "<blockquote>🎬 <b>VPlay</b> — group ke video chat me seedha video/audio. "
         "3GB movie bhi <b>0 second</b> me, bina download.</blockquote>",
         "",
+        "🟢 <b>Online</b>  ·  ⚡ <b>0s start</b>  ·  🎬 <b>HD</b>  ·  🔒 <b>Admin-safe</b>",
+        "",
         "<i>💡 Kisi bhi video par reply karke <code>/vplay</code> bhejein</i>",
         "",
-        f"<i>v{__version__} · ⚡ instant · 🎬 HD · 🔒 admin-safe</i>",
+        f"<i>v{__version__} · Made for group video chats</i>",
     ])
 
 
@@ -143,18 +142,22 @@ def start_markup(include_owner: bool = True) -> Markup:
         _btn("📖 Commands", "ui_help_main", style=P),
         _btn("🎛 Features", "ui_features", style=P),
     ])
-    _update = getattr(config, "UPDATE_CHANNEL", None) or (
-        f"https://t.me/{runtime.BOT_USERNAME}" if runtime.BOT_USERNAME else None
-    )
-    _support = getattr(config, "SUPPORT_GROUP", None) or f"tg://user?id={config.OWNER_ID}"
+    _update = getattr(config, "UPDATE_URL", None)
+    _support = getattr(config, "SUPPORT_URL", None)
     _row = []
     if _update:
         _row.append(_url_btn("📢 Updates", _update, style=P))
-    _row.append(_url_btn("💬 Support", _support, style=P))
+    if _support:
+        _row.append(_url_btn("💬 Support", _support, style=P))
+    else:
+        # No support group configured -> in-bot help (never owner profile)
+        _row.append(_btn("💬 Help", "ui_help_main", style=P))
     if _row:
         rows.append(_row)
     if include_owner:
-        rows.append([_url_btn("👤 Owner", f"tg://user?id={config.OWNER_ID}", style=P)])
+        _owner_url = getattr(config, "OWNER_URL", None)
+        if _owner_url:
+            rows.append([_url_btn("👤 Owner", _owner_url, style=P)])
     return Markup(rows)
 
 
@@ -208,74 +211,22 @@ def is_owner_button_error(e: BaseException) -> bool:
 
 
 def group_start_text() -> str:
-    return (
-        "✅ <b>VPlay ready hai!</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🎬 Video chat start karein, phir kisi video/audio par reply karke:\n"
-        "<code>/vplay</code>\n\n"
-        "📖 <b>Quick commands</b>\n"
-        "<code>/vplay</code> — play (reply / link)\n"
-        "<code>/vpause</code> · <code>/vresume</code>\n"
-        "<code>/vseek 90</code> — seek\n"
-        "<code>/vskip</code> · <code>/vstop</code>\n"
-        "<code>/vqueue</code> · <code>/vloop</code>\n\n"
-        "📚 Saari commands ke liye: <code>/help</code>"
-    )
+    return "\n".join([
+        "✅ <b>VPlay ready hai!</b>",
+        "",
+        "<blockquote>Video chat start karein, phir kisi video/audio par reply "
+        "karke <code>/vplay</code> bhejein.</blockquote>",
+        "",
+        "<b>⚡ Quick commands</b>",
+        "<code>/vplay</code> — play (reply / link)",
+        "<code>/vseek 5m</code> — smart seek",
+        "<code>/vpause</code> · <code>/vresume</code> · <code>/vskip</code>",
+        "<code>/vqueue</code> · <code>/vloop</code> · <code>/vstop</code>",
+        "",
+        "<i>📚 Saari commands: <code>/help</code></i>",
+    ])
 
-HELP_PAGES = {
-    "main": (
-        "📖 <b>VPlay Commands</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Category chunein 👇",
-    ),
-    "play": (
-        "🎬 <b>Playback Commands</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "<b>▶️ Play</b>\n"
-        "<code>/vplay</code> — file/link reply\n"
-        "<code>/vplay &lt;url&gt;</code> — direct link\n\n"
-        "<b>⏯ Control</b>\n"
-        "<code>/vpause</code> · <code>/vresume</code>\n"
-        "<code>/vseek 90</code> · <code>/seek 1:30</code>\n"
-        "<code>/vmute</code> · <code>/vunmute</code>\n"
-        "<code>/vvolume 150</code>\n\n"
-        "<b>⏭ Flow</b>\n"
-        "<code>/vskip</code> — agla track\n"
-        "<code>/vstop</code> — band + leave call"
-    ),
-    "queue": (
-        "📜 <b>Queue Commands</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "<code>/vqueue</code> — queue list\n"
-        "<code>/vnp</code> — now playing card\n"
-        "<code>/vshuffle</code> — shuffle\n"
-        "<code>/vloop</code> — loop mode\n\n"
-        "<b>Loop modes:</b>\n"
-        "🔁 <b>OFF</b> → normal advance\n"
-        "🔁 <b>TRACK</b> → current repeat\n"
-        "🔁 <b>QUEUE</b> → end me wapas"
-    ),
-    "system": (
-        "🛠 <b>System Commands</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "<code>/ping</code> — alive + latency\n"
-        "<code>/stats</code> — chats, users, plays\n"
-        "<code>/vdebug</code> — permissions check\n"
-        "<code>/vcleanup</code> — temp cleanup\n"
-        "<code>/setlog &lt;id&gt;</code> — log group (owner)"
-    ),
-    "setup": (
-        "❓ <b>Setup Guide</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "<b>1.</b> Bot ko group me add → <b>admin</b>\n"
-        "   <i>Permissions: Invite + Manage Video Chats</i>\n\n"
-        "<b>2.</b> Assistant bhi admin banayein\n"
-        "   <i>Same permissions</i>\n\n"
-        "<b>3.</b> Video chat start karein\n\n"
-        "<b>4.</b> Video par reply → <code>/vplay</code>\n\n"
-        "🆘 <i>Problem? Group me</i> <code>/vdebug</code>"
-    ),
-}
+
 
 def help_text(page: str = "main") -> str:
     return HELP_PAGES.get(page, HELP_PAGES["main"])[0]
@@ -470,18 +421,28 @@ def queue_text(state: ChatState) -> str:
 
 
 def owner_panel_text() -> str:
-    from bot.database.owner_data import get_start_pic, is_maintenance
-    _maint = "🟢 ON" if is_maintenance() else "⚪ OFF"
+    from bot.database.owner_data import get_default_thumb, get_start_pic, is_maintenance
+    _maint = "🔴 ON" if is_maintenance() else "🟢 OFF"
     _pic = "✅ Set" if get_start_pic() else "❌ Not set"
+    _thumb = "✅ Set" if get_default_thumb() else "❌ Not set"
     _uname = runtime.BOT_USERNAME or "unknown"
-    return (
-        "👑 <b>Owner Panel</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 Bot: @{_uname}\n"
-        f"⚙️ Maintenance: {_maint}\n"
-        f"🖼 Start Pic: {_pic}\n"
-        "\n<i>Action chunein:</i>"
-    )
+    _owner_uname = getattr(config, "OWNER_USERNAME", None) or "—"
+    _support = getattr(config, "SUPPORT_URL", None) or "❌ Not set"
+    return "\n".join([
+        "👑 <b>Owner Panel</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"🤖 <b>Bot:</b> @{_uname}",
+        f"👤 <b>Owner:</b> <code>{config.OWNER_ID}</code>",
+        f"🔗 <b>Owner user:</b> {_owner_uname}",
+        "",
+        f"⚙️ <b>Maintenance:</b> {_maint}",
+        f"🖼 <b>Start Pic:</b> {_pic}",
+        f"🎬 <b>Default Thumb:</b> {_thumb}",
+        f"💬 <b>Support:</b> {_support}",
+        "",
+        "<i>Action chunein:</i>",
+    ])
+
 
 
 def owner_panel_markup() -> Markup:
@@ -490,23 +451,19 @@ def owner_panel_markup() -> Markup:
     _maint = is_maintenance()
     P = _style("primary")
     D = _style("danger")
-    return Markup([
-        [
-            _btn("📊 Stats", "own_stats", style=P),
-            _btn("📢 Broadcast", "own_broadcast", style=P),
-        ],
-        [
-            _btn("🖼 Start Pic", "own_start_pic", style=P),
-            _btn("🎬 Default Thumb", "own_thumb", style=P),
-        ],
-        [
-            _btn("⚙️ Maintenance", "own_maintenance", style=(D if _maint else P)),
-            _btn("📝 Log Group", "own_log_group", style=P),
-        ],
-        [
-            _btn("🔄 Restart", "own_restart", style=P),
-            _btn("❌ Close", "own_close", style=D),
-        ],
-    ])
+    rows = [
+        [_btn("📊 Stats", "own_stats", style=P),
+         _btn("📢 Broadcast", "own_broadcast", style=P)],
+        [_btn("🖼 Start Pic", "own_start_pic", style=P),
+         _btn("🎬 Default Thumb", "own_thumb", style=P)],
+        [_btn("⚙️ Maintenance", "own_maintenance", style=(D if _maint else P)),
+         _btn("📝 Log Group", "own_log_group", style=P)],
+        [_btn("🔄 Refresh", "own_refresh", style=P),
+         _btn("🔄 Restart", "own_restart", style=P)],
+    ]
+    if _pic_set:
+        rows.append([_btn("🗑 Clear Start Pic", "own_start_pic_clear", style=D)])
+    rows.append([_btn("❌ Close", "own_close", style=D)])
+    return Markup(rows)
 
 

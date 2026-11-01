@@ -76,6 +76,28 @@ async def get_served_users() -> List[int]:
     return list(_users)
 
 
+async def get_setting(key: str):
+    """Read a persistent setting (owner config). None if unavailable."""
+    if _db is not None:
+        try:
+            doc = await _db.settings.find_one({"_id": f"owner_{key}"})
+            return doc.get("value") if doc else None
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Mongo get_setting(%s) failed: %s", key, e)
+    return None
+
+
+async def set_setting(key: str, value) -> None:
+    """Write a persistent setting. Silently degrades to memory-only."""
+    if _db is not None:
+        try:
+            await _db.settings.update_one(
+                {"_id": f"owner_{key}"}, {"$set": {"value": value}}, upsert=True
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Mongo set_setting(%s) failed: %s", key, e)
+
+
 async def set_log_channel(channel_id: int) -> None:
     global _log_channel
     _log_channel = channel_id

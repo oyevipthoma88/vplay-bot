@@ -55,6 +55,33 @@ STARTUP_NOTIFY = _get_env_bool("STARTUP_NOTIFY", default=True)
 # --- Branding / links -------------------------------------------------
 UPDATE_CHANNEL = _get_env_str("UPDATE_CHANNEL", default=None)
 SUPPORT_GROUP = _get_env_str("SUPPORT_GROUP", default=None)
+OWNER_USERNAME = _get_env_str("OWNER_USERNAME", default=None)
+
+
+def _normalize_link(value, username=None):
+    """Return a valid t.me URL or None. Accepts @name / name / full URL."""
+    if value:
+        v = value.strip()
+        if v.startswith("http://") or v.startswith("https://"):
+            return v
+        if v.startswith("tg://"):
+            return None
+        v = v.lstrip("@")
+        if v:
+            return f"https://t.me/{v}"
+    if username:
+        return f"https://t.me/{username.lstrip('@')}"
+    return None
+
+
+SUPPORT_URL = _normalize_link(SUPPORT_GROUP)
+UPDATE_URL = _normalize_link(UPDATE_CHANNEL)
+OWNER_URL = _normalize_link(None, OWNER_USERNAME)
+if SUPPORT_GROUP and not SUPPORT_URL:
+    import logging as _lg
+    _lg.getLogger(__name__).warning(
+        "SUPPORT_GROUP=%r invalid — Support button in-bot help use karega", SUPPORT_GROUP
+    )
 
 # --- MongoDB / Logs / Streaming --------------------------------------
 MONGO_DB_URI = _get_env_str("MONGO_DB_URI", default=None)

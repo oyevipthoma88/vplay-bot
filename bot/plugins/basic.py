@@ -27,6 +27,8 @@ async def start_cmd(client, message: Message):
         # Deep-link: /start features
         _parts = (message.text or "").split(maxsplit=1)
         _payload = _parts[1].strip().lower() if len(_parts) > 1 else ""
+        if _payload in ("owner", "panel", "admin"):
+            return  # owner.py handles /start owner
         if _payload in ("features", "feature", "f"):
             await message.reply_text(
                 ui.features_text(),
@@ -72,12 +74,8 @@ async def ui_buttons(client, query: CallbackQuery):
             await query.message.delete()
         elif data == "start":
             try:
-                _stats = await get_stats()
-            except Exception:  # noqa: BLE001
-                _stats = None
-            try:
                 await query.message.edit_text(
-                    ui.start_text(query.from_user.first_name, stats=_stats),
+                    ui.start_text(query.from_user.first_name),
                     reply_markup=ui.start_markup(),
                     **ui.NO_PREVIEW,
                 )
@@ -151,7 +149,15 @@ async def ping_cmd(client, message: Message):
 @bot.on_message(cmd("stats"))
 @error_guard
 async def stats_cmd(client, message: Message):
-    s = await get_stats()
+    try:
+        s = await get_stats()
+    except Exception as e:  # noqa: BLE001
+        await message.reply_text(
+            "📊 <b>VPlay Stats</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ DB error: <code>{type(e).__name__}</code>\n"
+            "<i>MongoDB Atlas quota full ho sakta hai.</i>"
+        )
+        return
     await message.reply_text(
         "📊 <b>VPlay Stats</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
