@@ -101,7 +101,7 @@ def start_markup(include_owner: bool = True) -> Markup:
                 "&admin=manage_video_chats+invite_users+delete_messages",
         )])
     rows.append([Btn("📖 Commands", callback_data="ui_help_main"),
-                 Btn("❓ Setup guide", callback_data="ui_help_setup")])
+                 _btn("❓ Setup guide", "ui_help_setup", style=_style("primary"))])
     if include_owner:
         # Telegram rejects the whole message (BUTTON_USER_PRIVACY_RESTRICTED)
         # if the owner's privacy hides them — callers retry without it.
@@ -171,16 +171,16 @@ def help_text(page: str = "main") -> str:
 def help_markup(page: str = "main", show_back_to_start: bool = True) -> Markup:
     if page == "main":
         rows = [
-            [Btn("🎬 Playback", callback_data="ui_help_play"),
-             Btn("📜 Queue", callback_data="ui_help_queue")],
-            [Btn("🛠 System", callback_data="ui_help_system"),
-             Btn("❓ Setup", callback_data="ui_help_setup")],
+            [_btn("🎬 Playback", "ui_help_play", style=_style("primary")),
+             _btn("📜 Queue", "ui_help_queue", style=_style("primary"))],
+            [_btn("🛠 System", "ui_help_system", style=_style("primary")),
+             _btn("❓ Setup", "ui_help_setup", style=_style("primary"))],
         ]
         if show_back_to_start:
-            rows.append([Btn("⬅️ Back", callback_data="ui_start")])
+            rows.append([_btn("⬅️ Back", "ui_start", style=_style("primary"))])
         return Markup(rows)
-    return Markup([[Btn("⬅️ Back", callback_data="ui_help_main"),
-                    Btn("❌ Close", callback_data="ui_close")]])
+    return Markup([[_btn("⬅️ Back", "ui_help_main", style=_style("primary")),
+                    _btn("❌ Close", "ui_close", style=_style("danger"))]])
 
 
 # --- Player card --------------------------------------------------------
