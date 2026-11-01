@@ -6,6 +6,7 @@ If you clear Atlas quota later, add persistence here.
 _state = {
     "maintenance": False,
     "start_pic": None,
+    "default_thumb": None,
 }
 
 
@@ -23,3 +24,11 @@ def get_start_pic():
 
 def set_start_pic(file_id) -> None:
     _state["start_pic"] = file_id
+
+
+def get_default_thumb():
+    return _state["default_thumb"]
+
+
+def set_default_thumb(file_id) -> None:
+    _state["default_thumb"] = file_id

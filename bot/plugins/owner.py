@@ -11,6 +11,7 @@ from bot.core.queue import active_chats
 from bot.database import get_served_chats, get_stats, set_log_channel
 from bot.database.owner_data import (
     get_start_pic, is_maintenance, set_maintenance, set_start_pic,
+    set_default_thumb,
 )
 from bot.logger import logger
 from bot.utils import ui
@@ -93,6 +94,18 @@ async def owner_buttons(client, query: CallbackQuery):
             )
             return
 
+        if action == "thumb":
+            _AWAITING[query.from_user.id] = "thumb"
+            await query.answer("🎬 Video/photo bhejo", show_alert=True)
+            await query.message.reply_text(
+                "🎬 <b>Set Default Thumbnail</b>\n\n"
+                "Ek video ya photo bhejo.\n"
+                "• Video → uska thumbnail use hoga\n"
+                "• Photo → wahi thumbnail banega\n\n"
+                "/cancel se cancel karo."
+            )
+            return
+
         if action == "start_pic_clear":
             set_start_pic(None)
             await query.answer("🗑 Start pic removed", show_alert=True)
@@ -144,7 +157,7 @@ async def owner_buttons(client, query: CallbackQuery):
         await query.answer(f"⚠️ {type(e).__name__}", show_alert=True)
 
 
-@bot.on_message(filters.private & (filters.text | filters.photo), group=10)
+@bot.on_message(filters.private & (filters.text | filters.photo | filters.video), group=10)
 async def _pending_input(client, message: Message):
     if not message.from_user or not _is_owner(message.from_user.id):
         return
@@ -157,6 +170,35 @@ async def _pending_input(client, message: Message):
         await message.reply_text("❌ Cancelled.")
         return
     if text.startswith("/"):
+        return
+
+    if state == "thumb":
+        _thumb_id = None
+        if message.photo:
+            _thumb_id = message.photo.file_id
+        elif message.video:
+            _vid = message.video
+            _thumbs = getattr(_vid, "thumbs", None)
+            if _thumbs:
+                _sorted = sorted(
+                    _thumbs,
+                    key=lambda x: (getattr(x, "width", 0) or 0) * (getattr(x, "height", 0) or 0),
+                    reverse=True,
+                )
+                for _t in _sorted:
+                    if getattr(_t, "file_id", None):
+                        _thumb_id = _t.file_id
+                        break
+            if not _thumb_id:
+                _t = getattr(_vid, "thumbnail", None) or getattr(_vid, "thumb", None)
+                if _t and getattr(_t, "file_id", None):
+                    _thumb_id = _t.file_id
+        if not _thumb_id:
+            await message.reply_text("⚠️ Photo ya video bhejo. /cancel se cancel karo.")
+            return
+        set_default_thumb(_thumb_id)
+        _AWAITING.pop(message.from_user.id, None)
+        await message.reply_text("✅ Default thumbnail set! Ab jab track ka thumb nahi hoga, ye use hoga.")
         return
 
     if state == "start_pic":

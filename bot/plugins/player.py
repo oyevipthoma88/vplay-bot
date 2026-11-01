@@ -1,4 +1,5 @@
 import html
+import os
 
 from pyrogram import filters
 from pyrogram.enums import ChatMemberStatus
@@ -31,6 +32,30 @@ _PRIVATE_HINT = (
 _last_card: dict = {}
 
 
+async def _send_photo_card(chat_id: int, thumb_id: str, text: str, markup) -> Message:
+    """Send photo card. On THUMBNAIL->PHOTO mismatch, download and reupload."""
+    try:
+        return await bot.send_photo(chat_id, thumb_id, caption=text, reply_markup=markup)
+    except Exception as e:
+        err = str(e).lower()
+        if "expected photo" in err or "thumbnail" in err:
+            logger.info("send_photo type mismatch (%s) — downloading thumb", e)
+            path = None
+            try:
+                path = await bot.download_media(thumb_id)
+                if path:
+                    return await bot.send_photo(chat_id, path, caption=text, reply_markup=markup)
+            except Exception as dl_err:
+                logger.warning("thumbnail download fail: %s", dl_err)
+            finally:
+                if path:
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+        raise
+
+
 async def _post_card(chat_id: int, text: str, edit_message: Message = None,
                      markup=None, use_thumb: bool = True) -> None:
     state = get_state(chat_id)
@@ -39,6 +64,12 @@ async def _post_card(chat_id: int, text: str, edit_message: Message = None,
     thumb = None
     if use_thumb and state.current is not None:
         thumb = getattr(state.current, "thumb_id", None)
+        if not thumb:
+            try:
+                from bot.database.owner_data import get_default_thumb
+                thumb = get_default_thumb()
+            except Exception:
+                thumb = None
     old = _last_card.pop(chat_id, None)
     msg = None
     if edit_message is not None:
@@ -52,7 +83,7 @@ async def _post_card(chat_id: int, text: str, edit_message: Message = None,
                         await edit_message.delete()
                     except Exception:  # noqa: BLE001
                         pass
-                    msg = await bot.send_photo(chat_id, thumb, caption=text, reply_markup=markup)
+                    msg = await _send_photo_card(chat_id, thumb, text, markup)
             else:
                 if _is_photo:
                     try:
@@ -70,7 +101,7 @@ async def _post_card(chat_id: int, text: str, edit_message: Message = None,
     if msg is None:
         if thumb:
             try:
-                msg = await bot.send_photo(chat_id, thumb, caption=text, reply_markup=markup)
+                msg = await _send_photo_card(chat_id, thumb, text, markup)
             except Exception as e:  # noqa: BLE001
                 logger.warning("send_photo fail (%s) — fallback to text", e)
                 msg = await bot.send_message(chat_id, text, reply_markup=markup)

@@ -52,23 +52,23 @@ def parse_time_to_seconds(value: str) -> int:
             total = total * 60 + int(part)
         return total
 
-    # Unit suffix format (5m, 2h, 30s, 1h30m, 2h15m30s)
-    pattern = re.compile(r"(\d+)\s*([hms])")
+    # Unit suffix format (5m, 2h, 30s, 1h30m, 2.5h, 1.5m)
+    pattern = re.compile(r"(\d+(?:\.\d+)?)\s*([hms])")
     matches = pattern.findall(value)
     if matches:
         cleaned = pattern.sub("", value).strip()
         if cleaned:
-            raise ValueError("Time samajh nahi aaya. Example: /vseek 5m, /vseek 2h")
-        total = 0
+            raise ValueError("Time samajh nahi aaya. Example: /vseek 5m, /vseek 2h, /vseek 2.5h")
+        total = 0.0
         for num, unit in matches:
-            n = int(num)
+            n = float(num)
             if unit == "h":
                 total += n * 3600
             elif unit == "m":
                 total += n * 60
             elif unit == "s":
                 total += n
-        return total
+        return int(total)
 
     # Plain digits (seconds)
     if value.isdigit():

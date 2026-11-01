@@ -308,13 +308,11 @@ def player_markup(chat_id: int, state: ChatState = None) -> Markup:
     S_MUTED = S_DANGER if muted else None
     return Markup([
         [
-            _btn("⏪ 30s", f"cb_back30_{c}", style=S_PRIMARY),
             _btn("⏪ 10s", f"cb_back_{c}", style=S_PRIMARY),
             _btn("▶️ Resume" if paused else "⏸ Pause",
                  f"cb_{'resume' if paused else 'pause'}_{c}",
                  style=S_PRIMARY),
             _btn("⏩ 10s", f"cb_fwd_{c}", style=S_PRIMARY),
-            _btn("⏩ 30s", f"cb_fwd30_{c}", style=S_PRIMARY),
         ],
         [
             _btn("⏭ Skip", f"cb_skip_{c}", style=S_PRIMARY),
@@ -428,13 +426,12 @@ def owner_panel_markup() -> Markup:
             _btn("📢 Broadcast", "own_broadcast", style=_style("primary")),
         ],
         [
-            _btn("🖼 Set Start Pic", "own_start_pic", style=_style("primary")),
-            _btn("🗑 Clear Pic", "own_start_pic_clear") if _pic_set else
-            _btn("⚙️ Maintenance", "own_maintenance", style=_style("danger") if _maint else None),
+            _btn("🖼 Start Pic", "own_start_pic", style=_style("primary")),
+            _btn("🎬 Default Thumb", "own_thumb", style=_style("primary")),
         ],
         [
-            _btn("📝 Log Group", "own_log_group"),
             _btn("⚙️ Maintenance", "own_maintenance", style=_style("danger") if _maint else None),
+            _btn("📝 Log Group", "own_log_group"),
         ],
         [
             _btn("🔄 Restart", "own_restart"),
