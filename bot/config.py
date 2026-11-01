@@ -46,8 +46,11 @@ OWNER_ID = _get_env_int("OWNER_ID", required=True)
 # --- Optional ---------------------------------------------------------
 AUTH_ONLY_ADMINS = _get_env_bool("AUTH_ONLY_ADMINS", default=True)
 DOWNLOADS_DIR = _get_env_str("DOWNLOADS_DIR", default="downloads")
-DEFAULT_VIDEO_QUALITY = _get_env_str("DEFAULT_VIDEO_QUALITY", default="sd_480p").lower()
+DEFAULT_VIDEO_QUALITY = _get_env_str("DEFAULT_VIDEO_QUALITY", default="hd_720p").lower()
 DEFAULT_AUDIO_QUALITY = _get_env_str("DEFAULT_AUDIO_QUALITY", default="high").lower()
+AUDIO_CHANNELS = _get_env_int("AUDIO_CHANNELS", default=2)  # 1=mono, 2=stereo
+VIDEO_FPS = _get_env_int("VIDEO_FPS", default=30)  # Telegram max=30
+FFMPEG_THREADS = _get_env_int("FFMPEG_THREADS", default=2)
 ASSISTANT_FALLBACK = _get_env_bool("ASSISTANT_FALLBACK", default=True)
 STARTUP_NOTIFY = _get_env_bool("STARTUP_NOTIFY", default=True)
 

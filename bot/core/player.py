@@ -37,17 +37,25 @@ import time
 import uuid
 from typing import Optional
 
-from pytgcalls.types import AudioQuality, MediaStream, VideoQuality
+from pytgcalls.types import (
+    AudioParameters, AudioQuality, MediaStream, VideoParameters, VideoQuality,
+)
 
 from bot import config
 from bot.core.clients import assistant, bot, call_py
 from bot.core.queue import Track, clear_state, get_state
 from bot.logger import logger
 
+# PyTgCalls enum names are HD_720p / HD_1080p (NOT FHD_1080p).
+# Telegram group calls cap at 720p@30fps; 1080p input is downscaled
+# server-side. Both aliases map to the real enum member.
 _VIDEO_QUALITY = {
+    "sd_360p": "SD_360p",
     "sd_480p": "SD_480p",
     "hd_720p": "HD_720p",
-    "fhd_1080p": "FHD_1080p",
+    "hd_1080p": "HD_1080p",
+    "fhd_1080p": "HD_1080p",
+    "uhd_1440p": "UHD_1440p",
 }
 
 # Method-name aliases across PyTgCalls versions, most recent name first.
@@ -81,16 +89,65 @@ def _lock(chat_id: int) -> asyncio.Lock:
 
 
 def _video_quality():
-    attr = _VIDEO_QUALITY.get(config.DEFAULT_VIDEO_QUALITY, "SD_480p")
-    return getattr(VideoQuality, attr, VideoQuality.SD_480p)
+    """Return VideoParameters tuned for smooth Telegram streaming.
+
+    Telegram caps group-call video at 720p@30fps, so for 1080p requests we
+    still send 1280x720@30 — downscaling is done by ffmpeg on the dyno
+    (cheap) and avoids server-side re-encode stutter.
+    """
+    key = config.DEFAULT_VIDEO_QUALITY
+    attr = _VIDEO_QUALITY.get(key, "HD_720p")
+    fps = int(getattr(config, "VIDEO_FPS", 30) or 30)
+    fps = min(max(fps, 15), 30)  # Telegram hard cap
+
+    if attr in ("HD_720p", "HD_1080p"):
+        try:
+            return VideoParameters(width=1280, height=720, frame_rate=fps)
+        except TypeError:
+            pass
+    if attr == "SD_480p":
+        try:
+            return VideoParameters(width=854, height=480, frame_rate=fps)
+        except TypeError:
+            pass
+    # Enum fallback (older PyTgCalls builds without VideoParameters)
+    return getattr(VideoQuality, attr, VideoQuality.HD_720p)
 
 
 def _audio_quality():
-    if config.DEFAULT_AUDIO_QUALITY == "low":
+    """48 kHz audio. Stereo for HIGH (Telegram supports it, less metallic)."""
+    lvl = (getattr(config, "DEFAULT_AUDIO_QUALITY", "high") or "high").lower()
+    if lvl == "low":
         return AudioQuality.LOW
-    if config.DEFAULT_AUDIO_QUALITY == "medium":
+    if lvl == "medium":
         return AudioQuality.MEDIUM
-    return AudioQuality.HIGH
+    channels = int(getattr(config, "AUDIO_CHANNELS", 2) or 2)
+    channels = 1 if channels < 2 else 2
+    try:
+        return AudioParameters(bitrate=48000, channels=channels)
+    except TypeError:
+        return AudioQuality.HIGH
+
+
+def _ffmpeg_params(offset: int = 0) -> str:
+    """Base FFmpeg options: fast probe + low-latency decode + seek.
+
+    -probesize / -analyzeduration: stop ffmpeg from scanning the whole big
+    MKV header before producing output (main cause of startup audio stutter).
+    -threads: decoder threads; Heroku 1x dyno has 2 vCPU.
+    -ss: seek offset (input-side, before -i => fast).
+    """
+    threads = int(getattr(config, "FFMPEG_THREADS", 2) or 2)
+    parts = [
+        "-b:start",
+        "-probesize", "5000000",
+        "-analyzeduration", "5000000",
+        "-fflags", "+genpts",
+        "-threads", str(max(1, threads)),
+    ]
+    if offset > 0:
+        parts += ["-ss", str(int(offset))]
+    return " ".join(parts)
 
 
 async def preflight_probe(source: str) -> None:
@@ -259,12 +316,13 @@ def _translate_play_error(e: BaseException) -> str:
 
 
 async def _start_stream(chat_id: int, track: Track, offset: int = 0) -> None:
-    kwargs = {}
-    if offset > 0:
-        kwargs["ffmpeg_parameters"] = f"-ss {int(offset)}"
+    kwargs = {"ffmpeg_parameters": _ffmpeg_params(offset)}
     try:
-        stream = MediaStream(track.source, _audio_quality(), _video_quality(), **kwargs)
+        stream = MediaStream(
+            track.source, _audio_quality(), _video_quality(), **kwargs
+        )
     except TypeError:
+        # Very old PyTgCalls: no ffmpeg_parameters kwarg at all.
         stream = MediaStream(track.source, _audio_quality(), _video_quality())
 
     state = get_state(chat_id)
