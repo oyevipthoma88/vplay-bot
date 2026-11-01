@@ -97,6 +97,7 @@ MOVIE_CHANNEL_ID = _get_env_int("MOVIE_CHANNEL_ID", default=None)  # numeric id
 MOVIE_SEARCH_ENABLED = _get_env_bool("MOVIE_SEARCH_ENABLED", default=True)
 MOVIE_CHANNELS = _get_env_str("MOVIE_CHANNELS", default="")   # comma-separated extra channels
 MOVIE_FUZZY_THRESHOLD = _get_env_int("MOVIE_FUZZY_THRESHOLD", default=60)
+MOVIE_SORT_MODE = _get_env_str("MOVIE_SORT_MODE", default="latest").lower()
 MOVIE_SCAN_LIMIT = _get_env_int("MOVIE_SCAN_LIMIT", default=1500)
 MOVIE_GLOBAL_LIMIT = _get_env_int("MOVIE_GLOBAL_LIMIT", default=25)
 

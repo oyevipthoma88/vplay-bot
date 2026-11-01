@@ -467,6 +467,7 @@ def owner_panel_text() -> str:
         f"🖼 <b>Start Pic:</b> {_pic}",
         f"🎬 <b>Default Thumb:</b> {_thumb}",
         f"📡 <b>Movie Channel:</b> {_mc_line}",
+        f"🎯 <b>Sort Mode:</b> {getattr(config, 'MOVIE_SORT_MODE', 'latest')}",
         f"💬 <b>Support:</b> {_support}",
         "",
         "<i>Action chunein:</i>",

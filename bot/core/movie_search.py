@@ -286,15 +286,94 @@ async def _global_search(client, query: str, limit: int = 20) -> List[Message]:
     return hits
 
 
+# Quality tier for ranking (higher = better).
+_QUALITY_RANK = {
+    "2160p": 5, "4k": 5, "uhd": 5,
+    "1080p": 4, "fhd": 4,
+    "720p": 3,
+    "480p": 2, "sd": 2,
+    "360p": 1,
+}
+
+# Sort mode presets: (score, quality, recency) weights.
+_SORT_MODES = {
+    "latest":   (0.20, 0.20, 0.60),  # DEFAULT — user wants newest
+    "balanced": (0.30, 0.35, 0.35),
+    "quality":  (0.30, 0.50, 0.20),
+    "score":    (0.60, 0.20, 0.20),
+}
+
+
+def _quality_rank(text: str) -> int:
+    """Return 0-5 quality tier. 2160p=5, 1080p=4, 720p=3, 480p=2."""
+    t = normalize(text)
+    for q, r in _QUALITY_RANK.items():
+        if q in t:
+            return r
+    if "bluray" in t or "blu ray" in t:
+        return 3
+    if "webdl" in t or "web dl" in t or "webrip" in t or "hdrip" in t:
+        return 2
+    if "hdcam" in t or "hdts" in t or "hdtc" in t or "camrip" in t:
+        return 1
+    return 0
+
+
+def _weights():
+    mode = (getattr(config, "MOVIE_SORT_MODE", "latest") or "latest").lower()
+    return _SORT_MODES.get(mode, _SORT_MODES["latest"])
+
+
 def _best(query: str, messages: List[Message]) -> Tuple[Optional[Message], int]:
-    best, best_score = None, 0
+    """Weighted ranking: score + quality + recency.
+
+    Modes (MOVIE_SORT_MODE env):
+      latest   - newest upload wins (default, 60% recency)
+      balanced - even mix
+      quality  - best resolution wins
+      score    - best text match wins
+
+    Safety: every candidate MUST pass _MIN_SCORE, so "latest" never plays
+    a random movie. Quality tier prevents playing 360p when 1080p exists.
+    """
+    if not messages:
+        return None, 0
+
+    candidates = []
     for msg in messages:
-        parsed = parse_caption(_title_of(msg))
-        hay = f"{parsed['title']} {parsed.get('year', '')} {_title_of(msg)}"
+        title = _title_of(msg)
+        parsed = parse_caption(title)
+        hay = f"{parsed['title']} {parsed.get('year', '')} {title}"
         s = _fuzzy_score(query, hay)
-        if s > best_score:
-            best, best_score = msg, s
-    return best, best_score
+        if s < _MIN_SCORE:
+            continue
+        qr = _quality_rank(title)
+        mid = getattr(msg, "id", 0) or 0
+        candidates.append((s, qr, mid, msg))
+
+    if not candidates:
+        return None, 0
+
+    max_mid = max(c[2] for c in candidates) or 1
+    w_score, w_quality, w_recency = _weights()
+
+    def final_weight(c):
+        s, qr, mid, _ = c
+        recency = (mid / max_mid) * 100       # 0-100
+        quality = qr * 20                     # 0-5 -> 0-100
+        return s * w_score + quality * w_quality + recency * w_recency
+
+    candidates.sort(key=final_weight, reverse=True)
+    top = candidates[0]
+    s, qr, mid, msg = top
+
+    logger.info(
+        "movie_search pick: id=%s score=%d quality_tier=%d weight=%.1f "
+        "(mode=%s, candidates=%d)",
+        mid, s, qr, final_weight(top),
+        getattr(config, "MOVIE_SORT_MODE", "latest"), len(candidates),
+    )
+    return msg, s
 
 
 # ------------------------------------------------------------ public API
