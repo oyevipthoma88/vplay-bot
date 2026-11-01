@@ -134,23 +134,58 @@ def _audio_quality():
             logger.warning("AudioParameters rejected (%s) — enum fallback", e)
     return AudioQuality.HIGH
 def _ffmpeg_params(offset: int = 0) -> str:
-    """Low-latency FFmpeg flags ONLY. Scaling is handled by VideoParameters.
+    """Tier 1 — buffer-first flags + audio gap-fill (root fix).
 
-    DO NOT add -vf or -r here — PyTgCalls builds its own scaling command from
-    VideoParameters. Adding -vf here causes DOUBLE SCALING (quality loss + CPU
-    waste) and conflicts with NTgCalls internal pipeline.
+    REMOVED (these caused the stutter):
+      -re            paces reads to exactly realtime -> zero headroom
+      -fflags nobuffer / -flags low_delay / -max_delay 0
+                     disable every buffer; a pipe consumer that reads on a
+                     fixed 20 ms cadence needs a FULL buffer, not a thin one.
+
+    ADDED:
+      -readrate 2.0           bounded read-ahead (~2x realtime): pipe stays
+                              full, but ffmpeg never slurps a 4 GB file
+      -fflags +genpts+igndts+discardcorrupt
+                              rebuild timestamps, drop broken packets
+      -err_detect ignore_err  one corrupt packet must not kill the stream
+      -reconnect* / -rw_timeout  survive a hiccup in our local streamer
+      -af aresample=async=1:first_pts=0
+                              fill audio gaps + align PTS (classic fix)
     """
-    threads = int(getattr(config, "FFMPEG_THREADS", 1) or 1)
+    threads = max(2, int(getattr(config, "FFMPEG_THREADS", 2) or 2))
     parts = [
         "-b:start",
-        "-re",
-        "-fflags", "nobuffer",
-        "-flags", "low_delay",
-        "-max_delay", "0",
-        "-probesize", "5000000",
-        "-analyzeduration", "5000000",
-        "-thread_queue_size", "1024",
-        "-threads", str(max(2, threads)),
+        "-thread_queue_size", "4096",
+        "-probesize", "10000000",
+        "-analyzeduration", "10000000",
+        "-fflags", "+genpts+igndts+discardcorrupt",
+        "-err_detect", "ignore_err",
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5",
+        "-rw_timeout", "15000000",
+        "-readrate", "2.0",
+        "-threads", str(threads),
+    ]
+    if offset > 0:
+        parts += ["-ss", str(int(offset))]
+    parts.append("-b:end")
+    parts += ["-af:audio:mid", "aresample=async=1:first_pts=0"]
+    return " ".join(parts)
+
+
+def _ffmpeg_params_safe(offset: int = 0) -> str:
+    """Tier 2 — core buffering only. No -af, no -readrate, no http options,
+    so this works on any ffmpeg build and any source type."""
+    threads = max(2, int(getattr(config, "FFMPEG_THREADS", 2) or 2))
+    parts = [
+        "-b:start",
+        "-thread_queue_size", "4096",
+        "-probesize", "10000000",
+        "-analyzeduration", "10000000",
+        "-fflags", "+genpts+igndts+discardcorrupt",
+        "-err_detect", "ignore_err",
+        "-threads", str(threads),
     ]
     if offset > 0:
         parts += ["-ss", str(int(offset))]
@@ -158,10 +193,9 @@ def _ffmpeg_params(offset: int = 0) -> str:
     return " ".join(parts)
 
 
-def _ffmpeg_params_safe(offset: int = 0) -> str:
-    """Minimal params — used as a retry if the section format is rejected."""
+def _ffmpeg_params_minimal(offset: int = 0) -> str:
+    """Tier 3 — last resort: plain input seek only."""
     return f"-ss {int(offset)}" if offset > 0 else ""
-
 
 
 async def preflight_probe(source: str) -> None:
@@ -338,14 +372,24 @@ async def _start_stream(chat_id: int, track: Track, offset: int = 0) -> None:
             )
         return MediaStream(track.source, _audio_quality(), _video_quality())
 
+    # Richest first, minimal last. If FFmpeg rejects a tier at play() time we
+    # step down one tier and retry instead of failing the whole /vplay.
+    _tiers = (
+        _ffmpeg_params(offset),          # 1: buffer + audio gap-fill
+        _ffmpeg_params_safe(offset),     # 2: buffer only
+        _ffmpeg_params_minimal(offset),  # 3: -ss only
+    )
+    _tier = 1
     try:
-        stream = _mk_stream(_ffmpeg_params(offset))
+        stream = _mk_stream(_tiers[0])
     except TypeError:
         # Very old build: no ffmpeg_parameters kwarg at all.
         stream = MediaStream(track.source, _audio_quality(), _video_quality())
     except Exception as e:  # noqa: BLE001
         logger.warning("rich ffmpeg params rejected (%s) — safe params", e)
-        stream = _mk_stream(_ffmpeg_params_safe(offset))
+        _tier = 2
+        stream = _mk_stream(_tiers[1])
+
 
     state = get_state(chat_id)
     is_switch = state.current is not None  # already in the call -> just switch source
@@ -385,6 +429,15 @@ async def _start_stream(chat_id: int, track: Track, offset: int = 0) -> None:
                     continue
         logger.warning("Chat %s: play attempt %s failed — %s", chat_id, attempt, describe_error(last_error))
         if attempt == 1:
+            # If FFmpeg rejected the rich parameter set, step down one tier so
+            # the retry actually has a chance.
+            if _tier < 3:
+                _tier += 1
+                try:
+                    stream = _mk_stream(_tiers[_tier - 1])
+                    logger.info("Chat %s: ffmpeg param tier -> %s/3", chat_id, _tier)
+                except Exception as _te:  # noqa: BLE001
+                    logger.debug("tier rebuild fail: %s", _te)
             # Drop a stale/dead connection and retry with a fresh join.
             await _leave(chat_id)
             await asyncio.sleep(1.5)

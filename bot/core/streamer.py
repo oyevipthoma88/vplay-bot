@@ -85,12 +85,18 @@ def _warm_media_dc(client, media) -> None:
         logger.debug("media DC warm-up skip: %s", e)
 
 
+_REF_TTL = 15 * 60  # refresh the message (file reference) every 15 min
+
+
 async def _fetch(chat_id: int, message_id: int, refresh: bool = False):
     key = (chat_id, message_id)
     cached = _cache.get(key)
-    if cached and not refresh and time.time() - cached[2] < _CACHE_TTL:
-        return cached[0], cached[1]
-
+    if cached and not refresh:
+        age = time.time() - cached[2]
+        if age < _CACHE_TTL:
+            if age < _REF_TTL:
+                return cached[0], cached[1]
+            refresh = True
     for client in (bot, assistant):
         try:
             msg = await client.get_messages(chat_id, message_id)
@@ -100,6 +106,8 @@ async def _fetch(chat_id: int, message_id: int, refresh: bool = False):
                 return client, msg
         except Exception as e:  # noqa: BLE001
             logger.debug("streamer get_messages via %s failed: %s", client.name, e)
+    if cached:
+        return cached[0], cached[1]
     return None, None
 
 
@@ -123,30 +131,86 @@ def _parse_range(rng: str, file_size: int):
     return start, end, status
 
 
-async def _pump(client, message, resp, start: int, length: int, file_size: int, sent=None) -> None:
-    skip = start % CHUNK_SIZE
-    remaining = length if file_size else float("inf")
-    gen = client.stream_media(message, offset=start // CHUNK_SIZE)
-    try:
-        async for chunk in gen:
-            if skip:
-                chunk = chunk[skip:]
-                skip = 0
-            if len(chunk) > remaining:
-                chunk = chunk[: int(remaining)]
-            await resp.write(chunk)
-            if sent is not None:
-                sent[0] += len(chunk)
-            remaining -= len(chunk)
-            if remaining <= 0:
-                break
-    finally:
-        # Release the client's download slot NOW (not whenever the garbage
-        # collector gets to it) — ffmpeg reconnects on every seek.
+async def _pump(client, message, resp, start: int, length: int, file_size: int,
+                sent=None) -> None:
+    """Pump bytes, surviving mid-stream failures.
+
+    Telegram file references expire during long movies; FloodWait also hits.
+    Previously any exception ended the generator -> ffmpeg saw EOF -> audio
+    died. Now we re-fetch the message and resume from the exact byte offset.
+    """
+    pos = int(start)
+    end = int(start) + int(length) if file_size else None
+    retries = 0
+    while True:
+        remaining = (end - pos) if end is not None else None
+        if remaining is not None and remaining <= 0:
+            return
+        skip = pos % CHUNK_SIZE
+        gen = client.stream_media(message, offset=pos // CHUNK_SIZE)
         try:
-            await gen.aclose()
-        except Exception:  # noqa: BLE001
-            pass
+            async for chunk in gen:
+                if skip:
+                    chunk = chunk[skip:]
+                    skip = 0
+                if not chunk:
+                    continue
+                if remaining is not None and len(chunk) > remaining:
+                    chunk = chunk[: int(remaining)]
+                await resp.write(chunk)
+                pos += len(chunk)
+                if sent is not None:
+                    sent[0] += len(chunk)
+                if remaining is not None:
+                    remaining -= len(chunk)
+                    if remaining <= 0:
+                        return
+            if end is None:
+                return
+            raise EOFError("stream ended early")
+        except FloodWait as e:
+            retries += 1
+            if retries > 6:
+                logger.warning("stream pump: FloodWait retries exhausted")
+                return
+            await asyncio.sleep(e.value + 1)
+        except FileReferenceExpired:
+            retries += 1
+            if retries > 6:
+                logger.warning("stream pump: file reference keeps expiring")
+                return
+            logger.info("stream pump: file reference expired — refreshing message")
+            _cid = getattr(getattr(message, "chat", None), "id", None)
+            _mid = getattr(message, "id", None)
+            if _cid is None or _mid is None:
+                return
+            _cli, _msg = await _fetch(_cid, _mid, refresh=True)
+            if _msg is None:
+                return
+            client, message = _cli, _msg
+            await asyncio.sleep(0.5)
+        except (ConnectionResetError, BrokenPipeError):
+            return
+        except (asyncio.TimeoutError, OSError) as e:
+            retries += 1
+            if retries > 6:
+                logger.warning("stream pump: network retries exhausted (%s)", e)
+                return
+            await asyncio.sleep(min(2 ** retries, 10))
+        except EOFError:
+            retries += 1
+            if retries > 6:
+                logger.warning("stream pump: stream truncated repeatedly")
+                return
+            await asyncio.sleep(1)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("stream pump ended: %s", e)
+            return
+        finally:
+            try:
+                await gen.aclose()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 async def _handle_stream(request: web.Request) -> web.StreamResponse:
