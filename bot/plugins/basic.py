@@ -44,18 +44,18 @@ async def start_cmd(client, message: Message):
         try:
             if _pic:
                 await message.reply_photo(_pic, caption=_text,
-                                          reply_markup=ui.start_markup())
+                                          reply_markup=ui.start_markup(is_owner=_is_owner, parse_mode=ParseMode.HTML))
             else:
-                await message.reply_text(_text, reply_markup=ui.start_markup(),
+                await message.reply_text(_text, reply_markup=ui.start_markup(is_owner=_is_owner),
                                          **ui.NO_PREVIEW)
         except Exception as e:  # noqa: BLE001
             if not ui.is_owner_button_error(e):
                 raise
             if _pic:
                 await message.reply_photo(_pic, caption=_text,
-                                          reply_markup=ui.start_markup(False))
+                                          reply_markup=ui.start_markup(False, is_owner=_is_owner, parse_mode=ParseMode.HTML))
             else:
-                await message.reply_text(_text, reply_markup=ui.start_markup(False),
+                await message.reply_text(_text, reply_markup=ui.start_markup(False, is_owner=_is_owner),
                                          **ui.NO_PREVIEW)
     else:
         await message.reply_text(ui.group_start_text(), reply_markup=ui.help_markup("main", False), **ui.HTML)
