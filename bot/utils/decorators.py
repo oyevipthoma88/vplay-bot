@@ -4,7 +4,19 @@ import traceback
 
 from pyrogram import Client
 from pyrogram.enums import ChatMemberStatus, ChatType
-from pyrogram.errors import ChatAdminRequired, FloodWait, PeerIdInvalid, UserNotParticipant
+from pyrogram.errors import (
+    BadRequest,
+    ChatAdminRequired,
+    ChatWriteForbidden,
+    FloodWait,
+    Forbidden,
+    InternalServerError,
+    MessageIdInvalid,
+    MessageNotModified,
+    PeerIdInvalid,
+    UserBannedInChannel,
+    UserNotParticipant,
+)
 from pyrogram.types import Message
 
 from bot import config
@@ -41,6 +53,25 @@ def _friendly(e: Exception) -> str:
         return "⚠️ Server par ffmpeg/ffprobe missing ya file read fail. Admin ko batayein."
     if "timeout" in low or "timed out" in low:
         return "⚠️ Request timeout ho gaya. Thodi der baad dobara try karein."
+    # ---- PyTgCalls / NTgCalls specific exceptions ----
+    if "novideosourcefound" in low:
+        return "⚠️ File me video track nahi hai. Audio-only file ke liye normal /vplay try karein."
+    if "noaudiosourcefound" in low:
+        return "⚠️ File me audio track nahi hai — bot stream nahi kar sakta."
+    if "imagesourcefound" in low:
+        return "⚠️ Ye image file hai, video/audio nahi. Sahi file bhejein."
+    if "invalidvideoproportion" in low:
+        return "⚠️ Video ka aspect ratio valid nahi (bahut chhota ya bahut bada)."
+    if "calldeclined" in low:
+        return "⚠️ Call decline ho gayi. Dobara try karein."
+    if "callbusy" in low:
+        return "⚠️ Call busy hai. Thodi der baad try karein."
+    if "notincallerror" in low or "not in call" in low:
+        return "⚠️ Bot call me nahi hai. Pehle /vplay se koi track chalao."
+    if "unmuteneeded" in low:
+        return "⚠️ Pehle bot ko unmute karein (/vunmute), phir try karein."
+    if ("no such file" in low and ("ffmpeg" in low or "ffprobe" in low)) or "filenotfounderror" in low:
+        return "⚠️ File delete ho gayi ya path galat hai. Naya file bhejein."
     return f"⚠️ {msg[:300]}"
 
 
