@@ -149,23 +149,37 @@ def _audio_quality():
 
 
 def _ffmpeg_params(offset: int = 0) -> str:
-    """FFmpeg section format with 720p scaling + 128k audio.
+    """FFmpeg section format with low-latency + realtime flags.
 
-    Telegram hard-caps group calls at 720p@30fps. Explicit scale avoids
-    server-side re-encode stutter; probesize/analyzeduration fix startup
-    audio stalls on big MKVs.
+    ROOT FIX for mid-stream quality drops:
+      -re                Read input at native frame rate (prevents CPU spikes
+                         and buffer buildup that cause later underruns)
+      -fflags nobuffer   Disable input buffering (low latency)
+      -flags low_delay   Low-delay decoder mode
+      -max_delay 0       No packet reorder delay
+      -thread_queue_size 512  Larger packet queue to avoid blocking
+
+    Scaling: 1280x720@30 explicit (Telegram hard-caps at 720p/30)
+    Audio:   128k bitrate, stereo 48kHz via AudioParameters
     """
-    threads = int(getattr(config, "FFMPEG_THREADS", 2) or 2)
+    threads = int(getattr(config, "FFMPEG_THREADS", 1) or 1)
     fps = min(max(int(getattr(config, "VIDEO_FPS", 30) or 30), 15), 30)
     parts = [
+        # --- base: before -i ---
         "-b:start",
+        "-re",
+        "-fflags", "nobuffer",
+        "-flags", "low_delay",
+        "-max_delay", "0",
         "-probesize", "5000000",
         "-analyzeduration", "5000000",
+        "-thread_queue_size", "512",
         "-threads", str(max(1, threads)),
     ]
     if offset > 0:
         parts += ["-ss", str(int(offset))]
     parts.append("-b:end")
+    # --- after -i ---
     parts += ["-vf:video:mid", "scale=1280:720:force_original_aspect_ratio=decrease"]
     parts += ["-r:video:mid", str(fps)]
     parts += ["-ab:audio:mid", "128k"]
