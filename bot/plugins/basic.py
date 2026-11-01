@@ -44,7 +44,7 @@ async def start_cmd(client, message: Message):
         try:
             if _pic:
                 await message.reply_photo(_pic, caption=_text,
-                                          reply_markup=ui.start_markup(is_owner=_is_owner, parse_mode=ParseMode.HTML))
+                                          reply_markup=ui.start_markup(is_owner=_is_owner), **ui.HTML)
             else:
                 await message.reply_text(_text, reply_markup=ui.start_markup(is_owner=_is_owner),
                                          **ui.NO_PREVIEW)
@@ -53,7 +53,7 @@ async def start_cmd(client, message: Message):
                 raise
             if _pic:
                 await message.reply_photo(_pic, caption=_text,
-                                          reply_markup=ui.start_markup(False, is_owner=_is_owner, parse_mode=ParseMode.HTML))
+                                          reply_markup=ui.start_markup(False, is_owner=_is_owner), **ui.HTML)
             else:
                 await message.reply_text(_text, reply_markup=ui.start_markup(False, is_owner=_is_owner),
                                          **ui.NO_PREVIEW)
