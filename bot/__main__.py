@@ -21,6 +21,7 @@ from bot import __version__, config
 from bot.core import runtime, streamer
 from bot.core.logger_gc import send_log
 from bot.core.player import leave_all, warm_up_assistant_peers
+from bot.core.storage import cleanup_loop
 
 _BOT_COMMANDS = [
     ("start", "Bot start karein"),
@@ -36,6 +37,8 @@ _BOT_COMMANDS = [
     ("vnowplaying", "Abhi kya chal raha hai"),
     ("vmute", "Mute"),
     ("vunmute", "Unmute"),
+    ("seek", "Seek alias — /seek 90 ya 1:30"),
+    ("vcleanup", "Purani temp files cleanup (admin)"),
     ("stats", "Bot stats"),
     ("vdebug", "Bot/assistant status"),
     ("ping", "Bot alive check"),
@@ -105,6 +108,7 @@ async def main():
     setup_logging()
 
     started_bot = started_assistant = started_calls = False
+    cleanup_task = None
     try:
         await bot.start()
         started_bot = True
@@ -116,6 +120,8 @@ async def main():
         started_calls = True
 
         await streamer.start_streamer()
+        cleanup_task = asyncio.create_task(cleanup_loop())
+        logger.info("Storage cleanup task started (every 6h)")
 
         me = await bot.get_me()
         assistant_me = await assistant.get_me()
@@ -144,6 +150,12 @@ async def main():
         await idle()
     finally:
         logger.info("Shutting down...")
+        if cleanup_task is not None and not cleanup_task.done():
+            cleanup_task.cancel()
+            try:
+                await cleanup_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         await _safe_stop("streamer", streamer.stop_streamer)
         if started_calls:
             # PyTgCalls 2.x has no stop(); leaving every call is the clean

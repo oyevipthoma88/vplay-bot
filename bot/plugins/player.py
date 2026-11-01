@@ -100,6 +100,23 @@ async def vplay_cmd(client, message: Message):
     user_id = message.from_user.id if message.from_user else 0
 
     track = await resolve_track(message, user_name, user_id, client)  # validate before any UI
+
+    # Duplicate detection — same title already playing or queued
+    _state = get_state(chat_id)
+    if _state.current and _state.current.title == track.title:
+        await message.reply_text(
+            "⚠️ <b>Ye track pehle se chal raha hai.</b>\n"
+            "Seek: <code>/vseek 90</code>  ·  Skip: <code>/vskip</code>"
+        )
+        return
+    for _i, _q in enumerate(_state.queue, 1):
+        if _q.title == track.title:
+            await message.reply_text(
+                f"⚠️ <b>Ye track pehle se queue me hai</b> (position #{_i}).\n"
+                "Dekhne ke liye: <code>/vqueue</code>"
+            )
+            return
+
     # One status message only — every extra edit is a Telegram round-trip
     # that delayed the actual start.
     status = await message.reply_text("⚡ <b>Stream start ho raha hai…</b>")
