@@ -35,9 +35,16 @@ async def _post_card(chat_id: int, text: str, edit_message: Message = None) -> N
     state = get_state(chat_id)
     markup = ui.player_markup(chat_id, state)
     old = _last_card.pop(chat_id, None)
+    msg = None
     if edit_message is not None:
-        msg = await edit_message.edit_text(text, reply_markup=markup)
-    else:
+        try:
+            msg = await edit_message.edit_text(text, reply_markup=markup)
+        except MessageNotModified:
+            msg = edit_message
+        except Exception as e:  # noqa: BLE001 - deleted / too old -> post fresh
+            logger.info("Card edit fail (%s) — naya card bhej raha hoon", e)
+            edit_message = None
+    if msg is None:
         msg = await bot.send_message(chat_id, text, reply_markup=markup)
     if old and (edit_message is None or old != edit_message.id):
         try:
@@ -48,11 +55,25 @@ async def _post_card(chat_id: int, text: str, edit_message: Message = None) -> N
         _last_card[chat_id] = msg.id
 
 
-async def _on_track_change(chat_id: int, track) -> None:
+async def _drop_card(chat_id: int) -> None:
+    old = _last_card.pop(chat_id, None)
+    if old:
+        try:
+            await bot.delete_messages(chat_id, old)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def _on_track_change(chat_id: int, track, reason: str = "ended") -> None:
     if track is None:
-        _last_card.pop(chat_id, None)
-        await bot.send_message(chat_id, "✅ <b>Queue khatam</b> — video chat se nikal gaya.\n"
-                                        "Naya track chalane ke liye <code>/vplay</code> bhejein.")
+        await _drop_card(chat_id)
+        if reason == "closed":
+            text = ("⏹ <b>Video chat band ho gayi</b> (ya assistant hata diya gaya) — "
+                    "queue clear.\nDobara chalane ke liye <code>/vplay</code> bhejein.")
+        else:
+            text = ("✅ <b>Queue khatam</b> — video chat se nikal gaya.\n"
+                    "Naya track chalane ke liye <code>/vplay</code> bhejein.")
+        await bot.send_message(chat_id, text)
         return
     await _post_card(chat_id, ui.now_playing_card(get_state(chat_id)))
 
@@ -79,12 +100,11 @@ async def vplay_cmd(client, message: Message):
     user_id = message.from_user.id if message.from_user else 0
 
     track = await resolve_track(message, user_name, user_id)  # validate before any UI
-    status = await message.reply_text("⚡ <b>Stream ready ho raha hai…</b>")
+    # One status message only — every extra edit is a Telegram round-trip
+    # that delayed the actual start.
+    status = await message.reply_text("⚡ <b>Stream start ho raha hai…</b>")
     try:
-        await status.edit_text("🔗 <b>Assistant ko check kar raha hoon…</b>")
         await player_core.ensure_assistant_in_chat(chat_id)
-        if get_state(chat_id).current is None:
-            await status.edit_text("📡 <b>Video chat se connect ho raha hoon…</b>")
         started = await player_core.play_or_queue(chat_id, track)
     except Exception:
         try:
@@ -133,7 +153,7 @@ async def vskip_cmd(client, message: Message):
     if nxt:
         await _post_card(message.chat.id, ui.now_playing_card(get_state(message.chat.id), "⏭ <b>Skipped — ab chal raha hai</b>"))
     else:
-        _last_card.pop(message.chat.id, None)
+        await _drop_card(message.chat.id)
         await message.reply_text("⏭ Queue khali hai — video chat se nikal gaya.")
 
 
@@ -145,7 +165,7 @@ async def vstop_cmd(client, message: Message):
         await message.reply_text("Abhi kuch play nahi ho raha.")
         return
     await player_core.stop(message.chat.id)
-    _last_card.pop(message.chat.id, None)
+    await _drop_card(message.chat.id)
     who = message.from_user.first_name if message.from_user else "admin"
     await log_stop(message.chat.title or "Group", message.chat.id, who)
     await message.reply_text(f"⏹ <b>Stopped</b> by {html.escape(who)} — video chat chhod di.")
@@ -235,19 +255,37 @@ async def player_buttons(client, query: CallbackQuery):
     _, action, chat_str = query.data.split("_", 2)
     chat_id = int(chat_str)
 
+    answered = False
+
+    async def _answer(text: str = None, alert: bool = False) -> None:
+        nonlocal answered
+        if answered:
+            return
+        answered = True
+        try:
+            await query.answer(text, show_alert=alert)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Buttons must act on the chat they are shown in (callback data can be
+    # crafted by custom clients).
+    if query.message is None or query.message.chat is None or query.message.chat.id != chat_id:
+        await _answer("Ye button is chat ka nahi hai.", True)
+        return
+
     if action not in ("queue", "refresh") and config.AUTH_ONLY_ADMINS and query.from_user.id != config.OWNER_ID:
         try:
             member = await client.get_chat_member(chat_id, query.from_user.id)
             if member.status not in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
-                await query.answer("🔒 Sirf admins ye button use kar sakte hain.", show_alert=True)
+                await _answer("🔒 Sirf admins ye button use kar sakte hain.", True)
                 return
         except Exception:  # noqa: BLE001
-            await query.answer("Permission check nahi ho paya.", show_alert=True)
+            await _answer("Permission check nahi ho paya.", True)
             return
 
     state = get_state(chat_id)
-    if action not in ("close",) and state.current is None:
-        await query.answer("Abhi kuch play nahi ho raha.", show_alert=True)
+    if action != "close" and state.current is None:
+        await _answer("Abhi kuch play nahi ho raha.", True)
         try:
             await query.message.edit_reply_markup(None)
         except Exception:  # noqa: BLE001
@@ -257,19 +295,19 @@ async def player_buttons(client, query: CallbackQuery):
     try:
         if action == "pause":
             await player_core.pause(chat_id)
-            await query.answer("⏸ Paused")
+            await _answer("⏸ Paused")
             await _refresh_card(query, chat_id)
         elif action == "resume":
             await player_core.resume(chat_id)
-            await query.answer("▶️ Resumed")
+            await _answer("▶️ Resumed")
             await _refresh_card(query, chat_id)
         elif action in ("back", "fwd"):
-            await query.answer("⏳ Seeking…")
+            await _answer("⏳ Seeking…")
             pos = await player_core.seek_relative(chat_id, -10 if action == "back" else 10)
             await _refresh_card(query, chat_id)
             logger.info("Button seek chat %s -> %ss", chat_id, pos)
         elif action == "skip":
-            await query.answer("⏭ Skipping…")
+            await _answer("⏭ Skipping…")
             nxt = await player_core.skip(chat_id)
             if nxt:
                 await _post_card(chat_id, ui.now_playing_card(get_state(chat_id), "⏭ <b>Skipped — ab chal raha hai</b>"),
@@ -278,42 +316,51 @@ async def player_buttons(client, query: CallbackQuery):
                 _last_card.pop(chat_id, None)
                 await query.message.edit_text("⏭ Queue khali hai — video chat se nikal gaya.")
         elif action == "stop":
+            await _answer("⏹ Stopping…")
             await player_core.stop(chat_id)
             _last_card.pop(chat_id, None)
-            await query.answer("⏹ Stopped")
             who = query.from_user.first_name or "admin"
-            await log_stop(query.message.chat.title or "Group", chat_id, who)
             await query.message.edit_text(f"⏹ <b>Stopped</b> by {html.escape(who)} — video chat chhod di.")
+            await log_stop(query.message.chat.title or "Group", chat_id, who)
         elif action == "loop":
             on = player_core.toggle_loop(chat_id)
-            await query.answer("🔁 Loop ON" if on else "➡️ Loop OFF")
+            await _answer("🔁 Loop ON" if on else "➡️ Loop OFF")
             await _refresh_card(query, chat_id)
         elif action == "mute":
             await player_core.mute(chat_id)
-            await query.answer("🔇 Muted")
+            await _answer("🔇 Muted")
             await _refresh_card(query, chat_id)
         elif action == "unmute":
             await player_core.unmute(chat_id)
-            await query.answer("🔊 Unmuted")
+            await _answer("🔊 Unmuted")
             await _refresh_card(query, chat_id)
         elif action == "refresh":
             await _refresh_card(query, chat_id)
-            await query.answer("🔄 Updated")
+            await _answer("🔄 Updated")
         elif action == "queue":
             names = "\n".join(f"{i}. {t.title[:40]}" for i, t in enumerate(state.queue[:5], 1)) or "(khali)"
             text = f"▶️ {state.current.title[:50]}\n\nNext:\n{names}"
             if len(state.queue) > 5:
                 text += f"\n…+{len(state.queue) - 5}"
-            await query.answer(text[:199], show_alert=True)
+            await _answer(text[:199], True)
         elif action == "close":
             _last_card.pop(chat_id, None)
+            await _answer()
             await query.message.delete()
     except Exception as e:  # noqa: BLE001
         logger.warning("Button %s failed in %s: %s", action, chat_id, player_core.describe_error(e))
-        try:
-            await query.answer((str(e).split("\n")[0] or "Error")[:190], show_alert=True)
-        except Exception:  # noqa: BLE001
-            pass
+        reason = (str(e).split("\n")[0] or type(e).__name__)[:190]
+        if not answered:
+            await _answer(reason, True)
+        else:
+            # The toast was already used ("Seeking…" / "Skipping…") — tell
+            # the user in the chat instead of failing silently.
+            try:
+                await bot.send_message(chat_id, f"⚠️ {html.escape(reason)}")
+            except Exception:  # noqa: BLE001
+                pass
+    finally:
+        await _answer()  # never leave Telegram's loading spinner hanging
 
 
 _register_private_hint(

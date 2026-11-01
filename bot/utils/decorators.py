@@ -77,6 +77,24 @@ async def _is_authorised(client: Client, chat_id: int, user_id: int) -> bool:
     return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
 
 
+_linked_cache: dict = {}
+
+
+async def _is_trusted_sender_chat(client: Client, chat, sender_chat) -> bool:
+    if sender_chat.id == chat.id:
+        return True  # anonymous group admin
+    linked = _linked_cache.get(chat.id)
+    if linked is None:
+        try:
+            full = await client.get_chat(chat.id)
+            linked = getattr(getattr(full, "linked_chat", None), "id", 0) or 0
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Linked channel check fail (chat %s): %s", chat.id, e)
+            linked = 0
+        _linked_cache[chat.id] = linked
+    return bool(linked) and sender_chat.id == linked
+
+
 def admin_only(func):
     @functools.wraps(func)
     async def wrapper(client: Client, message: Message, *args, **kwargs):
@@ -85,7 +103,11 @@ def admin_only(func):
         if message.chat and message.chat.type == ChatType.PRIVATE:
             return await func(client, message, *args, **kwargs)
         if not message.from_user:
-            if getattr(message, "sender_chat", None):
+            sender_chat = getattr(message, "sender_chat", None)
+            # Only the group itself (= an anonymous admin) or the group's
+            # linked channel may act without a user. Any member can "send as"
+            # their OWN channel, so other sender_chats must not pass.
+            if sender_chat and await _is_trusted_sender_chat(client, message.chat, sender_chat):
                 return await func(client, message, *args, **kwargs)
             await _try_reply(message, "Sirf group admins ye command use kar sakte hain.")
             return

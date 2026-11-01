@@ -20,7 +20,7 @@ from bot.plugins import fallback  # noqa: F401,E402
 from bot import __version__, config
 from bot.core import runtime, streamer
 from bot.core.logger_gc import send_log
-from bot.core.player import warm_up_assistant_peers
+from bot.core.player import leave_all, warm_up_assistant_peers
 
 _BOT_COMMANDS = [
     ("start", "Bot start karein"),
@@ -146,7 +146,9 @@ async def main():
         logger.info("Shutting down...")
         await _safe_stop("streamer", streamer.stop_streamer)
         if started_calls:
-            await _safe_stop("pytgcalls", lambda: call_py.stop())
+            # PyTgCalls 2.x has no stop(); leaving every call is the clean
+            # shutdown (otherwise the assistant hangs in the call as a ghost).
+            await _safe_stop("calls", leave_all)
         if started_assistant:
             await _safe_stop("assistant", lambda: assistant.stop())
         if started_bot:

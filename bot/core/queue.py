@@ -34,6 +34,9 @@ class ChatState:
     # Bumped every time a new stream starts — lets the stream-end handler
     # ignore duplicate/late "ended" events for an older track.
     generation: int = 0
+    # Wall-clock time the current stream (re)started — used to ignore the
+    # duplicate/late "stream ended" events PyTgCalls sends around a switch.
+    last_start: float = 0.0
 
     def elapsed(self) -> int:
         if self.started_at is None:

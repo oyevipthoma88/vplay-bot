@@ -5,6 +5,7 @@ Telegram files are NOT downloaded — they are served through the local
 MTProto streamer, so playback starts in ~0 seconds.
 """
 import re
+from urllib.parse import unquote
 
 from pyrogram.types import Message
 
@@ -49,7 +50,7 @@ async def resolve_track(message: Message, requested_by: str, requested_by_id: in
     """
     url = _url_from_text(message.text or message.caption or "")
     if url:
-        name = url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1] or "Direct link"
+        name = unquote(url.split("?", 1)[0].split("#", 1)[0].rstrip("/").rsplit("/", 1)[-1]) or "Direct link"
         return Track(
             source=url, title=_short(name), requested_by=requested_by,
             requested_by_id=requested_by_id, is_url=True, mode="link",

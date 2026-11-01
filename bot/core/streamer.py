@@ -52,6 +52,12 @@ def _get_media(message):
     )
 
 
+def _prune_cache() -> None:
+    now = time.time()
+    for key in [k for k, v in _cache.items() if now - v[2] > _CACHE_TTL * 6]:
+        _cache.pop(key, None)
+
+
 def remember(message, client=None) -> None:
     """Caches a message we already have (the one /vplay replied to) so the
     streamer can serve it without any extra Telegram API call, and warms up
@@ -61,6 +67,7 @@ def remember(message, client=None) -> None:
         return
     client = client or bot
     key = (message.chat.id, message.id)
+    _prune_cache()
     _cache[key] = (client, message, time.time())
     _warm_media_dc(client, _get_media(message))
 
@@ -88,6 +95,7 @@ async def _fetch(chat_id: int, message_id: int, refresh: bool = False):
         try:
             msg = await client.get_messages(chat_id, message_id)
             if msg and not getattr(msg, "empty", False) and _get_media(msg):
+                _prune_cache()
                 _cache[key] = (client, msg, time.time())
                 return client, msg
         except Exception as e:  # noqa: BLE001

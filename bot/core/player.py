@@ -16,6 +16,19 @@ Root-cause notes (v1.3.0):
   old handler advanced the queue on both, so every video skipped the next
   track instantly. A per-chat `generation` counter now makes each track end
   exactly once.
+
+v1.4.0:
+
+* The duplicate-StreamEnded guard only worked for tracks WITHOUT a known
+  duration, so Telegram videos (which have one) could still skip the next
+  track when the audio/video end events arrived a second apart. Every end
+  event within a few seconds of a (re)start is now ignored for every track.
+* Our own "leave + rejoin" retry fired the call-closed handler, which wiped
+  the whole queue/state mid-play. Intentional leaves are now ignored there.
+* Pause/mute state is kept in sync when the track changes (skip while
+  paused used to leave the new track silently paused).
+* pause/resume/mute/unmute now take the per-chat lock, so they can't race a
+  skip/seek/auto-advance.
 """
 import asyncio
 import os
@@ -48,9 +61,14 @@ _METHOD_ALIASES = {
 }
 
 _locks: dict = {}
+# Chats we are leaving on purpose (stop / retry) — the call-closed handler
+# must not treat those as "video chat ended by someone".
+_expected_leave: set = set()
+# Ignore "stream ended" events this soon after a stream (re)starts.
+_END_GUARD_SECONDS = 4.0
 
 # Callback set by the plugin layer to post the "now playing" card when the
-# queue auto-advances. Signature: async (chat_id, track_or_None) -> None
+# queue auto-advances. Signature: async (chat_id, track_or_None, reason="ended") -> None
 on_track_change = None
 
 
@@ -80,6 +98,17 @@ def describe_error(e: BaseException) -> str:
     name = type(e).__name__
     msg = str(e).strip()
     return f"{name}: {msg}" if msg else name
+
+
+async def _leave(chat_id: int) -> None:
+    """Leaves the call on purpose, without triggering the call-closed reset."""
+    _expected_leave.add(chat_id)
+    try:
+        await _safe_call("leave", chat_id)
+    except Exception:  # noqa: BLE001 - best-effort
+        pass
+    finally:
+        asyncio.get_event_loop().call_later(3, _expected_leave.discard, chat_id)
 
 
 async def _safe_call(action: str, *args):
@@ -182,6 +211,7 @@ async def _start_stream(chat_id: int, track: Track, offset: int = 0) -> None:
 
     state = get_state(chat_id)
     is_switch = state.current is not None  # already in the call -> just switch source
+    was_paused = state.is_paused
     if not is_switch:
         await ensure_group_call(chat_id)
 
@@ -201,10 +231,7 @@ async def _start_stream(chat_id: int, track: Track, offset: int = 0) -> None:
         logger.warning("Chat %s: play attempt %s failed — %s", chat_id, attempt, describe_error(last_error))
         if attempt == 1:
             # Drop a stale/dead connection and retry with a fresh join.
-            try:
-                await _safe_call("leave", chat_id)
-            except Exception:  # noqa: BLE001
-                pass
+            await _leave(chat_id)
             await asyncio.sleep(1.5)
             try:
                 await ensure_group_call(chat_id)
@@ -216,12 +243,31 @@ async def _start_stream(chat_id: int, track: Track, offset: int = 0) -> None:
             f"{_translate_play_error(last_error)}\n(Technical: {describe_error(last_error)})"
         ) from last_error
 
+    # We're in the call again: from now on a "call closed" event is real.
+    _expected_leave.discard(chat_id)
+
     state.current = track
     state.started_at = time.time() - offset
+    state.last_start = time.time()
     state.paused_duration = 0.0
     state.is_paused = False
     state.paused_at = None
     state.generation += 1
+
+    # The call keeps its own pause/mute flags across a source switch. A new
+    # stream must play (callers that want it paused, e.g. seek, re-pause),
+    # and a muted call stays muted so the button label stays truthful.
+    if was_paused:
+        try:
+            await _safe_call("resume", chat_id)
+        except Exception:  # noqa: BLE001 - not paused at call level = fine
+            pass
+    if state.is_muted:
+        try:
+            await _safe_call("mute", chat_id)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("re-mute fail: %s", e)
+            state.is_muted = False
 
 
 async def warm_up_assistant_peers() -> int:
@@ -328,10 +374,7 @@ async def _advance(chat_id: int) -> Optional[Track]:
             logger.warning("Track '%s' play nahi ho paya, skipping: %s", next_track.title, e)
             _cleanup_file(next_track)
 
-    try:
-        await _safe_call("leave", chat_id)
-    except Exception:  # noqa: BLE001 - best-effort, state is cleared regardless
-        pass
+    await _leave(chat_id)
     clear_state(chat_id)
     return None
 
@@ -351,51 +394,64 @@ async def stop(chat_id: int) -> None:
         _cleanup_file(state.current)
         for track in state.queue:
             _cleanup_file(track)
-        try:
-            await _safe_call("leave", chat_id)
-        except Exception:  # noqa: BLE001 - best-effort
-            pass
+        await _leave(chat_id)
         clear_state(chat_id)
 
 
+async def leave_all() -> None:
+    """Shutdown helper: leave every active call so the assistant doesn't
+    stay stuck as a silent participant after a restart."""
+    from bot.core.queue import _states
+
+    for chat_id in list(_states):
+        try:
+            await stop(chat_id)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("leave_all %s: %s", chat_id, e)
+
+
 async def pause(chat_id: int) -> None:
-    state = get_state(chat_id)
-    if state.current is None:
-        raise RuntimeError("Abhi kuch play nahi ho raha hai.")
-    if state.is_paused:
-        raise RuntimeError("Playback pehle se hi paused hai.")
-    await _safe_call("pause", chat_id)
-    state.is_paused = True
-    state.paused_at = time.time()
+    async with _lock(chat_id):
+        state = get_state(chat_id)
+        if state.current is None:
+            raise RuntimeError("Abhi kuch play nahi ho raha hai.")
+        if state.is_paused:
+            raise RuntimeError("Playback pehle se hi paused hai.")
+        await _safe_call("pause", chat_id)
+        state.is_paused = True
+        state.paused_at = time.time()
 
 
 async def resume(chat_id: int) -> None:
-    state = get_state(chat_id)
-    if state.current is None:
-        raise RuntimeError("Abhi kuch play nahi ho raha hai.")
-    if not state.is_paused:
-        raise RuntimeError("Playback already chal raha hai.")
-    await _safe_call("resume", chat_id)
-    if state.paused_at:
-        state.paused_duration += time.time() - state.paused_at
-    state.is_paused = False
-    state.paused_at = None
+    async with _lock(chat_id):
+        state = get_state(chat_id)
+        if state.current is None:
+            raise RuntimeError("Abhi kuch play nahi ho raha hai.")
+        if not state.is_paused:
+            raise RuntimeError("Playback already chal raha hai.")
+        await _safe_call("resume", chat_id)
+        if state.paused_at:
+            state.paused_duration += time.time() - state.paused_at
+        state.is_paused = False
+        state.paused_at = None
 
 
 async def mute(chat_id: int) -> None:
-    state = get_state(chat_id)
-    if state.current is None:
-        raise RuntimeError("Abhi kuch play nahi ho raha hai.")
-    await _safe_call("mute", chat_id)
-    state.is_muted = True
+    async with _lock(chat_id):
+        state = get_state(chat_id)
+        if state.current is None:
+            raise RuntimeError("Abhi kuch play nahi ho raha hai.")
+        await _safe_call("mute", chat_id)
+        state.is_muted = True
 
 
 async def unmute(chat_id: int) -> None:
-    state = get_state(chat_id)
-    if state.current is None:
-        raise RuntimeError("Abhi kuch play nahi ho raha hai.")
-    await _safe_call("unmute", chat_id)
-    state.is_muted = False
+    async with _lock(chat_id):
+        state = get_state(chat_id)
+        if state.current is None:
+            raise RuntimeError("Abhi kuch play nahi ho raha hai.")
+        await _safe_call("unmute", chat_id)
+        state.is_muted = False
 
 
 def toggle_loop(chat_id: int) -> bool:
@@ -539,9 +595,14 @@ async def _on_stream_end(_client, update) -> None:
             # track already changed while we waited for the lock, ignore.
             if state.current is None or state.generation != gen_at_event:
                 return
-            # Ignore spurious end events right after a (re)start/seek.
-            if state.started_at and time.time() - state.started_at - state.paused_duration < 3 \
-                    and not state.current.duration:
+            # Ignore duplicate / stale end events right after a (re)start,
+            # skip or seek — for EVERY track (Telegram files have a duration
+            # too, and those used to double-skip). Very short clips get a
+            # proportionally shorter guard so they still advance.
+            guard = _END_GUARD_SECONDS
+            if state.current.duration:
+                guard = min(guard, max(1.0, state.current.duration / 2))
+            if time.time() - state.last_start < guard:
                 return
             next_track = await _advance(chat_id)
     except Exception:  # noqa: BLE001 - a background handler must never die
@@ -561,6 +622,8 @@ async def _on_call_closed(_client, update) -> None:
     chat_id = getattr(update, "chat_id", None)
     if chat_id is None:
         return
+    if chat_id in _expected_leave or _lock(chat_id).locked():
+        return  # our own stop/retry, or a (re)start in progress
     state = get_state(chat_id)
     if state.current is None:
         return
@@ -568,6 +631,11 @@ async def _on_call_closed(_client, update) -> None:
     for track in [state.current, *state.queue]:
         _cleanup_file(track)
     clear_state(chat_id)
+    if on_track_change is not None:
+        try:
+            await on_track_change(chat_id, None, reason="closed")
+        except Exception:  # noqa: BLE001
+            logger.exception("Call-closed notice fail (chat %s)", chat_id)
 
 
 def _register_handlers() -> None:

@@ -36,7 +36,7 @@ def start_text(first_name: str) -> str:
     )
 
 
-def start_markup() -> Markup:
+def start_markup(include_owner: bool = True) -> Markup:
     rows = []
     if runtime.BOT_USERNAME:
         rows.append([Btn(
@@ -46,8 +46,17 @@ def start_markup() -> Markup:
         )])
     rows.append([Btn("📖 Commands", callback_data="ui_help_main"),
                  Btn("❓ Setup guide", callback_data="ui_help_setup")])
-    rows.append([Btn("👤 Owner", url=f"tg://user?id={config.OWNER_ID}")])
+    if include_owner:
+        # Telegram rejects the whole message (BUTTON_USER_PRIVACY_RESTRICTED)
+        # if the owner's privacy hides them — callers retry without it.
+        rows.append([Btn("👤 Owner", url=f"tg://user?id={config.OWNER_ID}")])
     return Markup(rows)
+
+
+def is_owner_button_error(e: BaseException) -> bool:
+    low = f"{type(e).__name__} {e}".lower()
+    return "button_user_privacy_restricted" in low or "buttonuserprivacyrestricted" in low \
+        or "button_user_invalid" in low or "buttonuserinvalid" in low
 
 
 def group_start_text() -> str:

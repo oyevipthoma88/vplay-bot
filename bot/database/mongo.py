@@ -118,9 +118,16 @@ async def get_stats() -> dict:
                 plays = doc.get("total_plays", plays)
         except Exception as e:  # noqa: BLE001
             logger.warning("Mongo get_stats failed: %s", e)
+    chats, users = len(_chats), len(_users)
+    if _db is not None:
+        try:
+            chats = await _db.chats.count_documents({})
+            users = await _db.users.count_documents({})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Mongo count failed: %s", e)
     return {
         "is_mongo": is_connected(),
-        "total_chats": len(await get_served_chats()),
-        "total_users": len(await get_served_users()),
+        "total_chats": chats,
+        "total_users": users,
         "total_plays": plays,
     }

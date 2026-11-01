@@ -1,6 +1,7 @@
 import time
 
 from pyrogram import filters
+from pyrogram.enums import ChatType
 from pyrogram.errors import MessageNotModified
 from pyrogram.types import CallbackQuery, Message
 
@@ -19,12 +20,18 @@ _BOOT = time.time()
 @bot.on_message(cmd("start"))
 @error_guard
 async def start_cmd(client, message: Message):
-    if message.chat.type.name == "PRIVATE":
+    if message.chat.type == ChatType.PRIVATE:
         if message.from_user:
             await add_served_user(message.from_user.id, message.from_user.first_name or "")
         name = message.from_user.first_name if message.from_user else ""
-        await message.reply_text(ui.start_text(name), reply_markup=ui.start_markup(),
-                                 disable_web_page_preview=True)
+        try:
+            await message.reply_text(ui.start_text(name), reply_markup=ui.start_markup(),
+                                     disable_web_page_preview=True)
+        except Exception as e:  # noqa: BLE001
+            if not ui.is_owner_button_error(e):
+                raise
+            await message.reply_text(ui.start_text(name), reply_markup=ui.start_markup(False),
+                                     disable_web_page_preview=True)
     else:
         await message.reply_text(ui.group_start_text(), reply_markup=ui.help_markup("main", False))
 
@@ -32,7 +39,7 @@ async def start_cmd(client, message: Message):
 @bot.on_message(cmd("help"))
 @error_guard
 async def help_cmd(client, message: Message):
-    private = message.chat.type.name == "PRIVATE"
+    private = message.chat.type == ChatType.PRIVATE
     await message.reply_text(ui.help_text("main"), reply_markup=ui.help_markup("main", private))
 
 
@@ -43,12 +50,21 @@ async def ui_buttons(client, query: CallbackQuery):
         if data == "close":
             await query.message.delete()
         elif data == "start":
-            await query.message.edit_text(ui.start_text(query.from_user.first_name),
-                                          reply_markup=ui.start_markup(),
-                                          disable_web_page_preview=True)
+            try:
+                await query.message.edit_text(ui.start_text(query.from_user.first_name),
+                                              reply_markup=ui.start_markup(),
+                                              disable_web_page_preview=True)
+            except MessageNotModified:
+                raise
+            except Exception as e:  # noqa: BLE001
+                if not ui.is_owner_button_error(e):
+                    raise
+                await query.message.edit_text(ui.start_text(query.from_user.first_name),
+                                              reply_markup=ui.start_markup(False),
+                                              disable_web_page_preview=True)
         else:
             page = data[len("help_"):]
-            private = query.message.chat.type.name == "PRIVATE"
+            private = query.message.chat.type == ChatType.PRIVATE
             await query.message.edit_text(ui.help_text(page), reply_markup=ui.help_markup(page, private))
         await query.answer()
     except MessageNotModified:
