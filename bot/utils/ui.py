@@ -51,6 +51,13 @@ def _btn(text, callback_data, style=None):
 
 
 
+def _volume_bar(vol: int, width: int = 10) -> str:
+    """Visual volume bar (0-200 scale)."""
+    vol = max(0, min(200, int(vol)))
+    filled = round(vol / 200 * width)
+    return "█" * filled + "░" * (width - filled)
+
+
 def _smart_truncate(text: str, max_len: int = 60) -> str:
     """Word-boundary pe truncate — word beech me na kate."""
     text = (text or "").strip()
@@ -191,44 +198,49 @@ def now_playing_card(state: ChatState, header: str = "🎬 <b>Ab chal raha hai</
     elapsed = state.elapsed()
     total = t.duration
     status = "⏸ Paused" if state.is_paused else "▶️ Playing"
-    flags = []
-    if state.is_muted:
-        flags.append("🔇 Muted")
-    _lm = getattr(state, "loop_mode", "off")
-    if _lm == "track":
-        flags.append("🔁 Track")
-    elif _lm == "queue":
-        flags.append("🔁 Queue")
-    _vol = getattr(state, "volume", 100)
-    if _vol != 100:
-        flags.append(f"🔊 {_vol}%")
 
-    _title = _smart_truncate(t.title, 60)
+    _title = _smart_truncate(t.title, 55)
     _remaining = max(0, total - elapsed) if total else 0
-    _percent = f"  <b>{int((elapsed / total) * 100)}%</b>" if total else ""
+    _percent = f" <b>{int((elapsed / total) * 100)}%</b>" if total else ""
     time_line = (
         f"<code>{format_duration(elapsed)} {progress_bar(elapsed, total)} "
         f"{format_duration(total) if total else 'LIVE'}</code>{_percent}"
         + (f"  <i>⏳ {format_duration(_remaining)} baki</i>" if total else "")
     )
 
+    _mode_e = _MODE_EMOJI.get(t.mode, "📌")
+    _pos = f"  ·  <b>1/{1 + len(state.queue)}</b>" if state.queue else ""
+
+    _lm = getattr(state, "loop_mode", "off")
+    _vol = getattr(state, "volume", 100)
+
+    _flags = [status]
+    if state.is_muted:
+        _flags.append("🔇 Muted")
+    if _lm == "track":
+        _flags.append("🔁 Track")
+    elif _lm == "queue":
+        _flags.append("🔁 Queue")
+    if _vol != 100:
+        _flags.append(f"🔊 {_vol}%")
+
     lines = [
         header,
-        "",
-        f"{_MODE_EMOJI.get(t.mode, "📌")} <b>{html.escape(_title)}</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"{_mode_e} <b>{html.escape(_title)}</b>{_pos}",
         time_line,
         "",
-        f"{'🎞' if t.is_video else '🎵'} <b>Type:</b> {'Video' if t.is_video else 'Audio'}"
+        f"{'🎞' if t.is_video else '🎵'} <b>{'Video' if t.is_video else 'Audio'}</b>"
         f"  ·  {_MODE_LABEL.get(t.mode, t.mode)}",
-        f"👤 <b>By:</b> {html.escape(t.requested_by)}",
-        f"📊 <b>Status:</b> {status}" + (f"  ·  {'  ·  '.join(flags)}" if flags else ""),
+        f"👤 <b>Requested by:</b> {html.escape(t.requested_by)}",
+        f"📊 <b>Status:</b> {'  ·  '.join(_flags)}",
     ]
     if state.queue:
-        _nxt = html.escape(state.queue[0].title)
-        if len(state.queue) > 1:
-            lines.append(f"⏭ <b>Next:</b> {_nxt} (+{len(state.queue) - 1} aur)")
-        else:
-            lines.append(f"⏭ <b>Next:</b> {_nxt}")
+        _nxt = html.escape(_smart_truncate(state.queue[0].title, 45))
+        _more = f" <i>(+{len(state.queue) - 1} aur)</i>" if len(state.queue) > 1 else ""
+        lines.append(f"⏭ <b>Next:</b> {_nxt}{_more}")
+    if _vol != 100:
+        lines.append(f"🔊 <code>{_volume_bar(_vol)}</code>")
     return "\n".join(lines)
 
 def player_markup(chat_id: int, state: ChatState = None) -> Markup:
@@ -272,40 +284,69 @@ def player_markup(chat_id: int, state: ChatState = None) -> Markup:
     ])
 
 
+def queue_markup(chat_id: int) -> Markup:
+    """Compact keyboard for /vqueue view (no player controls)."""
+    c = chat_id
+    return Markup([
+        [
+            _btn("🔙 Now Playing", f"cb_refresh_{c}", style=_style("primary")),
+            _btn("🔄 Refresh", f"cb_queue_{c}"),
+        ],
+        [_btn("❌ Close", f"cb_close_{c}", style=_style("danger"))],
+    ])
+
+
 def queued_card(track: Track, position: int) -> str:
-    dur = f" · ⏱ {format_duration(track.duration)}" if track.duration else ""
+    dur = f"  ·  ⏱ {format_duration(track.duration)}" if track.duration else ""
     mode_e = _MODE_EMOJI.get(track.mode, "📌")
     _title = _smart_truncate(track.title, 55)
     return (
-        f"➕ <b>Queue me add — #{position}</b>\n\n"
-        f"{mode_e} <b>{html.escape(_title)}</b>{dur}\n"
-        f"👤 <b>By:</b> {html.escape(track.requested_by)}"
+        f"➕ <b>Queue me add — Position #{position}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"{mode_e} <b>{html.escape(_title)}</b>\n"
+        f"{'🎞 Video' if track.is_video else '🎵 Audio'}{dur}\n"
+        f"👤 <b>Requested by:</b> {html.escape(track.requested_by)}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>Abhi kuch chal raha hai, ye baad me play hoga.</i>"
     )
-
 
 def queue_text(state: ChatState) -> str:
     t = state.current
+    elapsed = state.elapsed()
+    _now_time = (
+        f"  <code>{format_duration(elapsed)}/{format_duration(t.duration)}</code>"
+        if t.duration else ""
+    )
+    _lm = getattr(state, "loop_mode", "off")
+
     lines = [
-        "📜 <b>Queue</b>\n",
-        f"▶️ <b>Now:</b> {html.escape(_smart_truncate(t.title, 55))}"
-        + (f"  <code>{format_duration(state.elapsed())}/{format_duration(t.duration)}</code>"
-           if t.duration else ""),
+        "📜 <b>Queue</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"▶️ <b>Now Playing</b>{_now_time}",
+        f"   {_MODE_EMOJI.get(t.mode, '📌')} {html.escape(_smart_truncate(t.title, 50))}",
         "",
     ]
-    total = 0
-    for i, q in enumerate(state.queue[:20], start=1):
-        total += q.duration or 0
-        dur = f" · {format_duration(q.duration)}" if q.duration else ""
-        mode_e = _MODE_EMOJI.get(q.mode, "📌")
-        qt = _smart_truncate(q.title, 45)
-        lines.append(f"<b>{i}.</b> {mode_e} {html.escape(qt)}{dur} — <i>{html.escape(q.requested_by)}</i>")
-    if len(state.queue) > 20:
-        lines.append(f"…aur {len(state.queue) - 20} tracks")
-    if not state.queue:
-        lines.append("<i>(queue khali hai)</i>")
+
+    if state.queue:
+        lines.append(f"⏭ <b>Up Next</b> ({len(state.queue)})")
+        total = 0
+        for i, q in enumerate(state.queue[:20], start=1):
+            total += q.duration or 0
+            _dur = f"  <code>{format_duration(q.duration)}</code>" if q.duration else ""
+            _me = _MODE_EMOJI.get(q.mode, "📌")
+            _qt = _smart_truncate(q.title, 45)
+            lines.append(f"  <b>{i}.</b> {_me} {html.escape(_qt)}{_dur}")
+        if len(state.queue) > 20:
+            lines.append(f"  <i>…aur {len(state.queue) - 20} tracks</i>")
+        _tot = f"  ·  ~{format_duration(total)}" if total else ""
+        lines.append("")
+        lines.append(f"📊 <b>Total:</b> {len(state.queue)} tracks{_tot}")
     else:
-        lines.append(f"\n🧮 {len(state.queue)} tracks" + (f" · ~{format_duration(total)}" if total else ""))
-    _lm_footer = getattr(state, "loop_mode", "off")
-    if _lm_footer != "off":
-        lines.append(f"🔁 Loop: <b>{_lm_footer.upper()}</b>")
+        lines.append("<i>(Queue khali hai)</i>")
+        lines.append("")
+        lines.append("<i>Naya track add karne ke liye</i> <code>/vplay</code> <i>bhejein.</i>")
+
+    if _lm != "off":
+        lines.append(f"🔁 <b>Loop:</b> {_lm.upper()}")
     return "\n".join(lines)
+

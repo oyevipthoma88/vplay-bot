@@ -31,9 +31,10 @@ _PRIVATE_HINT = (
 _last_card: dict = {}
 
 
-async def _post_card(chat_id: int, text: str, edit_message: Message = None) -> None:
+async def _post_card(chat_id: int, text: str, edit_message: Message = None, markup=None) -> None:
     state = get_state(chat_id)
-    markup = ui.player_markup(chat_id, state)
+    if markup is None:
+        markup = ui.player_markup(chat_id, state)
     old = _last_card.pop(chat_id, None)
     msg = None
     if edit_message is not None:
@@ -194,7 +195,13 @@ async def vstop_cmd(client, message: Message):
     await _drop_card(message.chat.id)
     who = message.from_user.first_name if message.from_user else "admin"
     await log_stop(message.chat.title or "Group", message.chat.id, who)
-    await message.reply_text(f"⏹ <b>Stopped</b> by {html.escape(who)} — video chat chhod di.")
+    await message.reply_text(
+        f"⏹ <b>Playback stopped</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>Stopped by:</b> {html.escape(who)}\n"
+        "📜 Queue clear, video chat chhod diya gaya.\n\n"
+        "<i>Naya track chalane ke liye</i> <code>/vplay</code> <i>bhejein.</i>"
+    )
 
 
 @bot.on_message(cmd(["vseek", "seek"]) & _GROUP)
@@ -252,7 +259,11 @@ async def vqueue_cmd(client, message: Message):
     if state.current is None:
         await message.reply_text("Abhi kuch play nahi ho raha.")
         return
-    await _post_card(message.chat.id, ui.queue_text(state))
+    await _post_card(
+        message.chat.id,
+        ui.queue_text(state),
+        markup=ui.queue_markup(message.chat.id),
+    )
 
 
 @bot.on_message(cmd(["vnowplaying", "vnp", "vcurrent"]) & _GROUP)
