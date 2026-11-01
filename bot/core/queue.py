@@ -19,6 +19,7 @@ class Track:
     mode: str = "stream"   # "stream" (Telegram 0s stream) | "link" | "file"
     is_video: bool = True
     requested_by_id: int = 0
+    thumb_id: Optional[str] = None  # Telegram file_id for card thumbnail
 
 
 @dataclass

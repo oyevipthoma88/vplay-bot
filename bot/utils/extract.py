@@ -39,6 +39,34 @@ def _replied_media(message: Message):
     return None, None
 
 
+def _thumb_from_media(media) -> "str | None":
+    """Extract largest thumbnail file_id from Pyrogram media."""
+    for attr in ("thumbnail", "thumb"):
+        t = getattr(media, attr, None)
+        if t is not None:
+            fid = getattr(t, "file_id", None)
+            if fid:
+                return fid
+    thumbs = getattr(media, "thumbs", None)
+    if thumbs:
+        try:
+            sorted_thumbs = sorted(
+                thumbs,
+                key=lambda x: (getattr(x, "width", 0) or 0) * (getattr(x, "height", 0) or 0),
+                reverse=True,
+            )
+            for t in sorted_thumbs:
+                fid = getattr(t, "file_id", None)
+                if fid:
+                    return fid
+        except Exception:  # noqa: BLE001
+            for t in thumbs:
+                fid = getattr(t, "file_id", None)
+                if fid:
+                    return fid
+    return None
+
+
 def _short(title: str, limit: int = 60) -> str:
     title = (title or "").strip() or "Telegram media"
     return title if len(title) <= limit else title[: limit - 3] + "..."
@@ -97,8 +125,9 @@ async def resolve_track(message: Message, requested_by: str, requested_by_id: in
 
     size_mb = (getattr(media, "file_size", 0) or 0) / 1e6
     logger.info("0s stream: msg %s (%s, %.1f MB) — no download", replied.id, title, size_mb)
+    _thumb = _thumb_from_media(media)
     return Track(
         source=get_stream_url(replied.chat.id, replied.id), title=_short(title),
         requested_by=requested_by, requested_by_id=requested_by_id, is_url=True,
-        duration=duration, mode="stream", is_video=is_video,
+        duration=duration, mode="stream", is_video=is_video, thumb_id=_thumb,
     )

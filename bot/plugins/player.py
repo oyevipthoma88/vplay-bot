@@ -31,23 +31,52 @@ _PRIVATE_HINT = (
 _last_card: dict = {}
 
 
-async def _post_card(chat_id: int, text: str, edit_message: Message = None, markup=None) -> None:
+async def _post_card(chat_id: int, text: str, edit_message: Message = None,
+                     markup=None, use_thumb: bool = True) -> None:
     state = get_state(chat_id)
     if markup is None:
         markup = ui.player_markup(chat_id, state)
+    thumb = None
+    if use_thumb and state.current is not None:
+        thumb = getattr(state.current, "thumb_id", None)
     old = _last_card.pop(chat_id, None)
     msg = None
     if edit_message is not None:
         try:
-            msg = await edit_message.edit_text(text, reply_markup=markup)
+            _is_photo = bool(getattr(edit_message, "photo", None))
+            if thumb:
+                if _is_photo:
+                    msg = await edit_message.edit_caption(caption=text, reply_markup=markup)
+                else:
+                    try:
+                        await edit_message.delete()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    msg = await bot.send_photo(chat_id, thumb, caption=text, reply_markup=markup)
+            else:
+                if _is_photo:
+                    try:
+                        await edit_message.delete()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    msg = await bot.send_message(chat_id, text, reply_markup=markup)
+                else:
+                    msg = await edit_message.edit_text(text, reply_markup=markup)
         except MessageNotModified:
             msg = edit_message
-        except Exception as e:  # noqa: BLE001 - deleted / too old -> post fresh
-            logger.info("Card edit fail (%s) — naya card bhej raha hoon", e)
+        except Exception as e:  # noqa: BLE001
+            logger.info("Card edit fail (%s) — fresh send", e)
             edit_message = None
     if msg is None:
-        msg = await bot.send_message(chat_id, text, reply_markup=markup)
-    if old and (edit_message is None or old != edit_message.id):
+        if thumb:
+            try:
+                msg = await bot.send_photo(chat_id, thumb, caption=text, reply_markup=markup)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("send_photo fail (%s) — fallback to text", e)
+                msg = await bot.send_message(chat_id, text, reply_markup=markup)
+        else:
+            msg = await bot.send_message(chat_id, text, reply_markup=markup)
+    if old and msg is not None and old != msg.id:
         try:
             await bot.delete_messages(chat_id, old)
         except Exception:  # noqa: BLE001
@@ -335,6 +364,7 @@ async def vqueue_cmd(client, message: Message):
         message.chat.id,
         ui.queue_text(state),
         markup=ui.queue_markup(message.chat.id),
+        use_thumb=False,
     )
 
 
@@ -379,9 +409,20 @@ async def _refresh_card(query: CallbackQuery, chat_id: int) -> None:
     if state.current is None:
         return
     try:
-        await query.message.edit_text(ui.now_playing_card(state), reply_markup=ui.player_markup(chat_id, state))
+        if getattr(query.message, "photo", None):
+            await query.message.edit_caption(
+                caption=ui.now_playing_card(state),
+                reply_markup=ui.player_markup(chat_id, state),
+            )
+        else:
+            await query.message.edit_text(
+                ui.now_playing_card(state),
+                reply_markup=ui.player_markup(chat_id, state),
+            )
     except MessageNotModified:
         pass
+    except Exception as e:  # noqa: BLE001
+        logger.info("Refresh card fail: %s", e)
 
 
 @bot.on_callback_query(filters.regex(rf"^cb_({_ACTIONS})_(-?\d+)$"))
