@@ -68,6 +68,22 @@ def _volume_bar(vol: int, width: int = 10) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
+def _greeting() -> str:
+    """Time-aware greeting (IST). Falls back to 'Hey'."""
+    try:
+        from datetime import datetime, timedelta, timezone
+        _h = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).hour
+    except Exception:
+        return "Hey"
+    if 5 <= _h < 12:
+        return "Good morning"
+    if 12 <= _h < 17:
+        return "Good afternoon"
+    if 17 <= _h < 21:
+        return "Good evening"
+    return "Hey"
+
+
 def _smart_truncate(text: str, max_len: int = 60) -> str:
     """Word-boundary pe truncate — word beech me na kate."""
     text = (text or "").strip()
@@ -94,35 +110,21 @@ _MODE_LABEL = {
 
 
 def start_text(first_name: str, stats: dict = None) -> str:
-    _name = html.escape(first_name or "dost")
-    lines = [
-        f"<b>👋 Hey {_name}!</b>",
+    """Premium start card: hero + blockquote pitch + italic tip.
+
+    `stats` kept for backward compatibility but intentionally NOT shown.
+    """
+    _name = html.escape((first_name or "dost").strip()[:32]) or "dost"
+    return "\n".join([
+        f"<b>👋 {_greeting()}, {_name}</b>",
         "",
         "<blockquote>🎬 <b>VPlay</b> — group ke video chat me seedha video/audio. "
-        "3GB movie bhi <b>0 second</b> me start ho jati hai.</blockquote>",
+        "3GB movie bhi <b>0 second</b> me, bina download.</blockquote>",
         "",
-    ]
-    if stats:
-        _c = stats.get("total_chats", 0)
-        _u = stats.get("total_users", 0)
-        _p = stats.get("total_plays", 0)
-        lines.extend([
-            f"📊 <b>{_c:,}</b> chats  ·  <b>{_u:,}</b> users  ·  <b>{_p:,}</b> plays",
-            "",
-        ])
-    lines.extend([
-        "━━━━━━━━━━━━━━━━━━━━",
-        "<b>🚀 Quick Start</b>",
+        "<i>💡 Kisi bhi video par reply karke <code>/vplay</code> bhejein</i>",
         "",
-        "<b>1.</b> Group me add → <b>admin</b> banayein",
-        "<b>2.</b> Video chat start karein",
-        "<b>3.</b> Video par reply → <code>/vplay</code>",
-        "",
-        "💡 <i>Direct link? <code>/vplay &lt;url&gt;</code></i>",
-        "",
-        f"<i>v{__version__} · Built with ❤️</i>",
+        f"<i>v{__version__} · ⚡ instant · 🎬 HD · 🔒 admin-safe</i>",
     ])
-    return "\n".join(lines)
 
 
 
@@ -137,26 +139,60 @@ def start_markup(include_owner: bool = True) -> Markup:
         )])
     rows.append([
         _btn("📖 Commands", "ui_help_main", style=_style("primary")),
-        _btn("❓ Setup", "ui_help_setup", style=_style("primary")),
+        _btn("🎛 Features", "ui_features", style=_style("primary")),
     ])
-    # Updates + Support
-    _update = getattr(config, "UPDATE_CHANNEL", None)
-    _support = getattr(config, "SUPPORT_GROUP", None)
+    _update = getattr(config, "UPDATE_CHANNEL", None) or (
+        f"https://t.me/{runtime.BOT_USERNAME}" if runtime.BOT_USERNAME else None
+    )
+    _support = getattr(config, "SUPPORT_GROUP", None) or f"tg://user?id={config.OWNER_ID}"
     _row = []
     if _update:
         _row.append(_url_btn("📢 Updates", _update))
-    elif runtime.BOT_USERNAME:
-        _row.append(_url_btn("📢 Updates", f"https://t.me/{runtime.BOT_USERNAME}"))
-    if _support:
-        _row.append(_url_btn("💬 Support", _support))
-    else:
-        _row.append(_url_btn("💬 Support", f"tg://user?id={config.OWNER_ID}"))
+    _row.append(_url_btn("💬 Support", _support))
     if _row:
         rows.append(_row)
     if include_owner:
         rows.append([_url_btn("👤 Owner", f"tg://user?id={config.OWNER_ID}")])
     return Markup(rows)
 
+
+
+def features_text() -> str:
+    return "\n".join([
+        "🎛 <b>VPlay Features</b>",
+        "",
+        "<blockquote>Sab kuch buttons se — koi command yaad rakhne ki zaroorat nahi.</blockquote>",
+        "",
+        "<b>▶️ Playback</b>",
+        "⚡ <b>0s start</b> — 3GB file bhi turant",
+        "⏯ pause / resume · ⏭ skip · ⏹ stop",
+        "⏩ smart seek — <code>5m</code> · <code>2h</code> · <code>1:30</code>",
+        "",
+        "<b>🎛 Controls</b>",
+        "🔊 volume 1–200 · 🔁 loop off/track/queue",
+        "🔀 shuffle · 📜 live queue · 🔄 refresh",
+        "",
+        "<b>🔒 Safe by design</b>",
+        "admin-only buttons · maintenance mode",
+        "per-chat state · zero downloads",
+        "",
+        "<i>💡 Tip: player card ke buttons se sab control hota hai</i>",
+    ])
+
+
+def features_markup() -> Markup:
+    rows = []
+    if runtime.BOT_USERNAME:
+        _share = (
+            f"https://t.me/share/url?url=https://t.me/{runtime.BOT_USERNAME}"
+            "&text=Try%20VPlay%20%E2%80%94%20instant%20group%20video%20streaming"
+        )
+        rows.append([_url_btn("🔗 Share VPlay", _share, style=_style("success"))])
+    rows.append([
+        _btn("⬅️ Back", "ui_start", style=_style("primary")),
+        _btn("❌ Close", "ui_close", style=_style("danger")),
+    ])
+    return Markup(rows)
 
 
 def is_owner_button_error(e: BaseException) -> bool:

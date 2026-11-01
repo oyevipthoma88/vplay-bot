@@ -24,13 +24,19 @@ async def start_cmd(client, message: Message):
         if message.from_user:
             await add_served_user(message.from_user.id, message.from_user.first_name or "")
         name = message.from_user.first_name if message.from_user else ""
-        try:
-            _stats = await get_stats()
-        except Exception:  # noqa: BLE001
-            _stats = None
+        # Deep-link: /start features
+        _parts = (message.text or "").split(maxsplit=1)
+        _payload = _parts[1].strip().lower() if len(_parts) > 1 else ""
+        if _payload in ("features", "feature", "f"):
+            await message.reply_text(
+                ui.features_text(),
+                reply_markup=ui.features_markup(),
+                **ui.NO_PREVIEW,
+            )
+            return
         from bot.database.owner_data import get_start_pic
         _pic = get_start_pic()
-        _text = ui.start_text(name, stats=_stats)
+        _text = ui.start_text(name)
         try:
             if _pic:
                 await message.reply_photo(_pic, caption=_text,
@@ -58,7 +64,7 @@ async def help_cmd(client, message: Message):
     await message.reply_text(ui.help_text("main"), reply_markup=ui.help_markup("main", private))
 
 
-@bot.on_callback_query(filters.regex(r"^ui_(start|close|help_\w+)$"))
+@bot.on_callback_query(filters.regex(r"^ui_(start|close|help_\w+|features)$"))
 async def ui_buttons(client, query: CallbackQuery):
     data = query.data[3:]
     try:
@@ -85,6 +91,12 @@ async def ui_buttons(client, query: CallbackQuery):
                     reply_markup=ui.start_markup(False),
                     **ui.NO_PREVIEW,
                 )
+        elif data == "features":
+            await query.message.edit_text(
+                ui.features_text(),
+                reply_markup=ui.features_markup(),
+                **ui.NO_PREVIEW,
+            )
         else:
             page = data[len("help_"):]
             private = query.message.chat.type == ChatType.PRIVATE
