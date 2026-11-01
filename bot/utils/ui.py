@@ -305,25 +305,27 @@ def player_markup(chat_id: int, state: ChatState = None) -> Markup:
     S_SUCCESS = _style("success")
     S_DANGER = _style("danger")
 
+    S_MUTED = S_DANGER if muted else None
     return Markup([
         [
-            _btn("⏪ 30s", f"cb_back30_{c}"),
-            _btn("⏪ 10s", f"cb_back_{c}"),
+            _btn("⏪ 30s", f"cb_back30_{c}", style=S_PRIMARY),
+            _btn("⏪ 10s", f"cb_back_{c}", style=S_PRIMARY),
             _btn("▶️ Resume" if paused else "⏸ Pause",
                  f"cb_{'resume' if paused else 'pause'}_{c}",
                  style=S_PRIMARY),
-            _btn("⏩ 10s", f"cb_fwd_{c}"),
-            _btn("⏩ 30s", f"cb_fwd30_{c}"),
+            _btn("⏩ 10s", f"cb_fwd_{c}", style=S_PRIMARY),
+            _btn("⏩ 30s", f"cb_fwd30_{c}", style=S_PRIMARY),
         ],
         [
-            _btn("⏭ Skip", f"cb_skip_{c}"),
+            _btn("⏭ Skip", f"cb_skip_{c}", style=S_PRIMARY),
             _btn("⏹ Stop", f"cb_stop_{c}", style=S_DANGER),
             _btn(f"🔁 Loop: {_lm_label}", f"cb_loop_{c}",
                  style=S_SUCCESS if looping else None),
         ],
         [
             _btn("🔊 Unmute" if muted else "🔇 Mute",
-                 f"cb_{'unmute' if muted else 'mute'}_{c}"),
+                 f"cb_{'unmute' if muted else 'mute'}_{c}",
+                 style=S_MUTED),
             _btn("📜 Queue", f"cb_queue_{c}"),
             _btn("🔄 Refresh", f"cb_refresh_{c}"),
         ],

@@ -66,8 +66,15 @@ async def resolve_track(message: Message, requested_by: str, requested_by_id: in
         )
     if media is None:
         raise ValueError(
-            "Kisi video/audio file par reply karke /vplay bhejo, "
-            "ya phir /vplay <direct link> bhejo."
+            "⚠️ <b>/vplay Usage</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "1️⃣ Video/audio file par <b>reply</b> karke <code>/vplay</code>\n"
+            "2️⃣ <code>/vplay &lt;link&gt;</code> — direct URL\n"
+            "3️⃣ <code>/vplayforce &lt;link&gt;</code> — queue bypass\n\n"
+            "<b>Examples:</b>\n"
+            "• <code>/vplay https://example.com/video.mp4</code>\n"
+            "• <code>/vplay</code> (media par reply karke)\n"
+            "• <code>/vplayforce</code> (turant replace)"
         )
 
     mime = (getattr(media, "mime_type", "") or "").lower()

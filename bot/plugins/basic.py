@@ -28,16 +28,25 @@ async def start_cmd(client, message: Message):
             _stats = await get_stats()
         except Exception:  # noqa: BLE001
             _stats = None
+        from bot.database.owner_data import get_start_pic
+        _pic = get_start_pic()
+        _text = ui.start_text(name, stats=_stats)
         try:
-            await message.reply_text(ui.start_text(name, stats=_stats),
-                                     reply_markup=ui.start_markup(),
-                                     **ui.NO_PREVIEW)
+            if _pic:
+                await message.reply_photo(_pic, caption=_text,
+                                          reply_markup=ui.start_markup())
+            else:
+                await message.reply_text(_text, reply_markup=ui.start_markup(),
+                                         **ui.NO_PREVIEW)
         except Exception as e:  # noqa: BLE001
             if not ui.is_owner_button_error(e):
                 raise
-            await message.reply_text(ui.start_text(name, stats=_stats),
-                                     reply_markup=ui.start_markup(False),
-                                     **ui.NO_PREVIEW)
+            if _pic:
+                await message.reply_photo(_pic, caption=_text,
+                                          reply_markup=ui.start_markup(False))
+            else:
+                await message.reply_text(_text, reply_markup=ui.start_markup(False),
+                                         **ui.NO_PREVIEW)
     else:
         await message.reply_text(ui.group_start_text(), reply_markup=ui.help_markup("main", False))
 

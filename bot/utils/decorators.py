@@ -75,6 +75,27 @@ def _friendly(e: Exception) -> str:
     return f"⚠️ {msg[:300]}"
 
 
+async def _check_maintenance(message) -> bool:
+    """Returns True if allowed to proceed, False if blocked."""
+    try:
+        from bot.database.owner_data import is_maintenance
+    except ImportError:
+        return True
+    if not is_maintenance():
+        return True
+    user_id = getattr(getattr(message, "from_user", None), "id", 0)
+    if user_id == config.OWNER_ID:
+        return True
+    await _try_reply(
+        message,
+        "⚙️ <b>Maintenance Mode</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Bot abhi <b>maintenance</b> me hai.\n"
+        "Thodi der baad try karein.",
+    )
+    return False
+
+
 def error_guard(func):
     """Any handler exception -> friendly reply + full traceback in logs +
     crash report in the Log GC.
@@ -89,6 +110,8 @@ def error_guard(func):
             mark_seen(message)
         except Exception:  # noqa: BLE001
             pass
+        if not await _check_maintenance(message):
+            return
         try:
             return await func(client, message, *args, **kwargs)
         except (ValueError, RuntimeError) as e:
