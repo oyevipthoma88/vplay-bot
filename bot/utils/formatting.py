@@ -26,28 +26,54 @@ def human_size(num_bytes: int) -> str:
 
 
 def parse_time_to_seconds(value: str) -> int:
-    """Parses '90', '1:30', or '1:02:03' into a plain number of seconds.
+    """Parses '90', '1:30', '1:02:03', '5m', '2h', '30s', '1h30m' into seconds.
 
     Raises ValueError (which the handlers turn into a friendly reply) for
     anything that isn't a plain, non-negative time.
     """
-    value = (value or "").strip()
-    if not value:
-        raise ValueError("Time khali hai. Example: /vseek 90 ya /vseek 1:30")
+    import re
 
-    if ":" not in value:
-        if not value.isdigit():
-            raise ValueError("Time samajh nahi aaya. Example: /vseek 90 ya /vseek 1:30")
+    value = (value or "").strip().lower()
+    if not value:
+        raise ValueError(
+            "Time khali hai. Example: /vseek 90, /vseek 1:30, /vseek 5m, /vseek 2h"
+        )
+
+    # Colon format (e.g. 1:30, 1:02:03)
+    if ":" in value:
+        parts = value.split(":")
+        if len(parts) > 3:
+            raise ValueError("Time samajh nahi aaya. Example: /vseek 1:02:03")
+        total = 0
+        for part in parts:
+            part = part.strip()
+            if not part.isdigit():
+                raise ValueError("Time samajh nahi aaya. Example: /vseek 90 ya /vseek 1:30")
+            total = total * 60 + int(part)
+        return total
+
+    # Unit suffix format (5m, 2h, 30s, 1h30m, 2h15m30s)
+    pattern = re.compile(r"(\d+)\s*([hms])")
+    matches = pattern.findall(value)
+    if matches:
+        cleaned = pattern.sub("", value).strip()
+        if cleaned:
+            raise ValueError("Time samajh nahi aaya. Example: /vseek 5m, /vseek 2h")
+        total = 0
+        for num, unit in matches:
+            n = int(num)
+            if unit == "h":
+                total += n * 3600
+            elif unit == "m":
+                total += n * 60
+            elif unit == "s":
+                total += n
+        return total
+
+    # Plain digits (seconds)
+    if value.isdigit():
         return int(value)
 
-    parts = value.split(":")
-    if len(parts) > 3:
-        raise ValueError("Time samajh nahi aaya. Example: /vseek 1:02:03")
-
-    total = 0
-    for part in parts:
-        part = part.strip()
-        if not part.isdigit():
-            raise ValueError("Time samajh nahi aaya. Example: /vseek 90 ya /vseek 1:30")
-        total = total * 60 + int(part)
-    return total
+    raise ValueError(
+        "Time samajh nahi aaya. Example: /vseek 90, /vseek 1:30, /vseek 5m, /vseek 2h"
+    )
