@@ -30,7 +30,8 @@ class ChatState:
     paused_duration: float = 0.0
     is_paused: bool = False
     is_muted: bool = False
-    loop: bool = False
+    loop_mode: str = "off"  # "off" | "track" | "queue"
+    volume: int = 100  # 1-200
     # Bumped every time a new stream starts — lets the stream-end handler
     # ignore duplicate/late "ended" events for an older track.
     generation: int = 0

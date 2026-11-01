@@ -243,6 +243,17 @@ def _translate_play_error(e: BaseException) -> str:
         return "Assistant ye group resolve nahi kar paya. Assistant ko group me add karein."
     if "connection" in low or "telegramserver" in low or "rtmp" in low:
         return "Telegram call server se connection nahi bana. Thodi der baad dobara try karein."
+    # --- PyTgCalls-specific exceptions ---
+    if "novideosourcefound" in low:
+        return "File me video track nahi hai. Audio-only file ke liye normal /vplay try karein."
+    if "noaudiosourcefound" in low:
+        return "File me audio track nahi hai — bot stream nahi kar sakta."
+    if "imagesourcefound" in low:
+        return "Ye image file hai, video/audio nahi. Sahi file bhejein."
+    if "livestreamfound" in low:
+        return "Live stream supported nahi hai. Recording file bhejein."
+    if "invalidvideoproportion" in low:
+        return "Video ka aspect ratio valid nahi (bahut chhota ya bahut bada)."
     return ("Video/voice chat se connect nahi ho paya. Check karein ki video chat ON hai aur "
             "assistant admin hai (Manage Video Chats).")
 
@@ -412,15 +423,24 @@ async def _advance(chat_id: int) -> Optional[Track]:
     state = get_state(chat_id)
     finished = state.current
 
-    if state.loop and finished is not None:
+    # --- Loop TRACK: current track replay ---
+    if state.loop_mode == "track" and finished is not None:
         try:
             state.current = None
             await _start_stream(chat_id, finished)
             return finished
         except Exception as e:  # noqa: BLE001
-            logger.warning("Loop replay fail: %s", describe_error(e))
+            logger.warning("Loop-track replay fail: %s", describe_error(e))
+            # fail hua -> normal flow me continue (agla track try karega)
 
-    _cleanup_file(finished)
+    # --- Loop QUEUE: current track ko end me wapas daalo ---
+    _requeue = state.loop_mode == "queue" and finished is not None
+    if _requeue:
+        state.queue.append(finished)
+
+    # Cleanup sirf tab jab track queue me wapas nahi ja raha
+    if not _requeue:
+        _cleanup_file(finished)
     state.current = None
 
     while state.queue:
@@ -442,7 +462,7 @@ async def skip(chat_id: int) -> Optional[Track]:
         state = get_state(chat_id)
         if state.current is None:
             raise RuntimeError("Abhi kuch play nahi ho raha hai.")
-        state.loop = False
+        state.loop_mode = "off"
         return await _advance(chat_id)
 
 
@@ -512,12 +532,33 @@ async def unmute(chat_id: int) -> None:
         state.is_muted = False
 
 
-def toggle_loop(chat_id: int) -> bool:
+def cycle_loop_mode(chat_id: int) -> str:
+    """Cycle: off -> track -> queue -> off. Returns new mode."""
     state = get_state(chat_id)
     if state.current is None:
         raise RuntimeError("Abhi kuch play nahi ho raha hai.")
-    state.loop = not state.loop
-    return state.loop
+    _cycle = {"off": "track", "track": "queue", "queue": "off"}
+    state.loop_mode = _cycle.get(state.loop_mode, "off")
+    logger.info("Chat %s: loop_mode -> %s", chat_id, state.loop_mode)
+    return state.loop_mode
+
+# Backward-compat shim (agar koi purana code toggle_loop call kare)
+
+async def set_volume(chat_id: int, volume: int) -> int:
+    """Set playback volume (1-200). Returns applied volume."""
+    async with _lock(chat_id):
+        state = get_state(chat_id)
+        if state.current is None:
+            raise RuntimeError("Abhi kuch play nahi ho raha hai.")
+        volume = max(1, min(200, int(volume)))
+        # PyTgCalls 2.x: change_volume_call(chat_id, volume)
+        await _safe_call("change_volume", chat_id, volume)
+        state.volume = volume
+        return volume
+
+def toggle_loop(chat_id: int) -> bool:
+    mode = cycle_loop_mode(chat_id)
+    return mode != "off"
 
 
 def shuffle(chat_id: int) -> int:

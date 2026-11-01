@@ -224,7 +224,7 @@ async def vseek_cmd(client, message: Message):
 @error_guard
 @admin_only
 async def vloop_cmd(client, message: Message):
-    on = player_core.toggle_loop(message.chat.id)
+    mode = player_core.cycle_loop_mode(message.chat.id)
     await _post_card(
         message.chat.id,
         ui.now_playing_card(
@@ -419,7 +419,7 @@ _register_private_hint(
     [
         "vplay", "play", "vpause", "vresume", "vskip", "vstop", "vend",
         "vseek", "vqueue", "vplaylist", "vnowplaying", "vnp", "vcurrent",
-        "vmute", "vunmute", "vloop", "vshuffle", "seek", "vcleanup",
+        "vmute", "vunmute", "vloop", "vshuffle", "seek", "vcleanup", "vvolume",
     ]
 )
 
@@ -455,4 +455,30 @@ async def vcleanup_cmd(client, message: Message):
         await message.reply_text(f"🧹 <b>Cleanup done</b> — {removed} temp files delete hui.")
     else:
         await message.reply_text("🧹 Cleanup ke liye koi temp file nahi mili.")
+
+@bot.on_message(cmd("vvolume") & _GROUP)
+@error_guard
+@admin_only
+async def vvolume_cmd(client, message: Message):
+    """Volume set karo (1-200). Usage: /vvolume 150"""
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        _st = get_state(message.chat.id)
+        await message.reply_text(
+            f"🔊 <b>Volume:</b> {getattr(_st, 'volume', 100)}/200\n"
+            "Usage: <code>/vvolume 150</code>"
+        )
+        return
+    try:
+        vol = int(parts[1])
+    except ValueError:
+        raise ValueError("Volume 1-200 ke beech ka number hona chahiye.")
+    applied = await player_core.set_volume(message.chat.id, vol)
+    await _post_card(
+        message.chat.id,
+        ui.now_playing_card(
+            get_state(message.chat.id),
+            f"🔊 <b>Volume: {applied}/200</b>",
+        ),
+    )
 

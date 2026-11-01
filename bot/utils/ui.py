@@ -163,8 +163,14 @@ def now_playing_card(state: ChatState, header: str = "🎬 <b>Ab chal raha hai</
     flags = []
     if state.is_muted:
         flags.append("🔇 Muted")
-    if state.loop:
-        flags.append("🔁 Loop")
+    _lm = getattr(state, "loop_mode", "off")
+    if _lm == "track":
+        flags.append("🔁 Track")
+    elif _lm == "queue":
+        flags.append("🔁 Queue")
+    _vol = getattr(state, "volume", 100)
+    if _vol != 100:
+        flags.append(f"🔊 {_vol}%")
 
     _title = _smart_truncate(t.title, 60)
     _remaining = max(0, total - elapsed) if total else 0
@@ -197,7 +203,10 @@ def now_playing_card(state: ChatState, header: str = "🎬 <b>Ab chal raha hai</
 def player_markup(chat_id: int, state: ChatState = None) -> Markup:
     paused = bool(state and state.is_paused)
     muted = bool(state and state.is_muted)
-    looping = bool(state and state.loop)
+    looping = bool(state and getattr(state, "loop_mode", "off") != "off")
+    _lm_label = {"off": "OFF", "track": "TRACK", "queue": "QUEUE"}.get(
+        getattr(state, "loop_mode", "off") if state else "off", "OFF"
+    )
     c = chat_id
     return Markup([
         [
@@ -211,7 +220,7 @@ def player_markup(chat_id: int, state: ChatState = None) -> Markup:
         [
             Btn("⏭ Skip", callback_data=f"cb_skip_{c}"),
             Btn("⏹ Stop", callback_data=f"cb_stop_{c}"),
-            Btn("🔁 Loop ON" if looping else "🔁 Loop OFF", callback_data=f"cb_loop_{c}"),
+            Btn(f"🔁 Loop: {_lm_label}", callback_data=f"cb_loop_{c}"),
         ],
         [
             Btn("🔊 Unmute" if muted else "🔇 Mute",
@@ -256,6 +265,7 @@ def queue_text(state: ChatState) -> str:
         lines.append("<i>(queue khali hai)</i>")
     else:
         lines.append(f"\n🧮 {len(state.queue)} tracks" + (f" · ~{format_duration(total)}" if total else ""))
-    if state.loop:
-        lines.append("🔁 Loop ON")
+    _lm_footer = getattr(state, "loop_mode", "off")
+    if _lm_footer != "off":
+        lines.append(f"🔁 Loop: <b>{_lm_footer.upper()}</b>")
     return "\n".join(lines)
