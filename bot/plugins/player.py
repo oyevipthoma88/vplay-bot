@@ -147,6 +147,49 @@ async def vplay_cmd(client, message: Message):
         await status.edit_text(ui.queued_card(track, len(get_state(chat_id).queue)))
 
 
+
+
+@bot.on_message(cmd(["vplayforce", "playforce"]) & _GROUP)
+@error_guard
+@admin_only
+async def vplayforce_cmd(client, message: Message):
+    """Force-play: bypass queue, immediately replace current stream."""
+    chat_id = message.chat.id
+    user_name = message.from_user.first_name if message.from_user else (
+        getattr(message.sender_chat, "title", None) or "Admin")
+    user_id = message.from_user.id if message.from_user else 0
+
+    track = await resolve_track(message, user_name, user_id, client)
+
+    status = await message.reply_text("⚡ **Force-play** — stream replace ho raha hai…")
+    try:
+        await player_core.ensure_assistant_in_chat(chat_id)
+        # Force: clear queue + stop current, then play new
+        state = get_state(chat_id)
+        state.queue.clear()
+        if state.current is not None:
+            await player_core.stop(chat_id)
+        started = await player_core.play_or_queue(chat_id, track)
+    except Exception:
+        try:
+            await status.delete()
+        except Exception:
+            pass
+        raise
+
+    try:
+        await add_served_chat(chat_id, message.chat.title or "")
+        if user_id:
+            await add_served_user(user_id, user_name)
+        await increment_play_count()
+        await log_play(message.chat.title or "Group", chat_id, user_name, user_id, track.title, "force")
+    except Exception as e:
+        logger.warning("Stats/log update fail: %s", e)
+
+    logger.info("vplayforce[%s]: playing", chat_id)
+    await _post_card(chat_id, ui.now_playing_card(get_state(chat_id)), edit_message=status)
+
+
 @bot.on_message(cmd("vpause") & _GROUP)
 @error_guard
 @admin_only
@@ -223,6 +266,35 @@ async def vseek_cmd(client, message: Message):
         ui.now_playing_card(
             get_state(message.chat.id),
             f"⏩ <b>Seeked to {format_duration(used)}</b>",
+        ),
+    )
+
+
+
+
+@bot.on_message(cmd(["seekback", "vseekback"]) & _GROUP)
+@error_guard
+@admin_only
+async def seekback_cmd(client, message: Message):
+    """Seek backwards by N seconds. Usage: /seekback 30 or /seekback 1m"""
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        _cur = format_duration(get_state(message.chat.id).elapsed())
+        await message.reply_text(
+            f"Usage: `/seekback 30` ya `/seekback 1m`\n"
+            f"Abhi: {_cur} pe chal raha hai."
+        )
+        return
+    try:
+        delta = parse_time_to_seconds(parts[1].split()[0])
+    except ValueError as e:
+        raise ValueError(str(e))
+    used = await player_core.seek_relative(message.chat.id, -delta)
+    await _post_card(
+        message.chat.id,
+        ui.now_playing_card(
+            get_state(message.chat.id),
+            f"⏪ Seeked back {format_duration(delta)} → {format_duration(used)}",
         ),
     )
 

@@ -46,6 +46,10 @@ COMMANDS = {
     "seek": player.vseek_cmd,
     "vvolume": player.vvolume_cmd,
     "vcleanup": player.vcleanup_cmd,
+    "vplayforce": player.vplayforce_cmd,
+    "playforce": player.vplayforce_cmd,
+    "seekback": player.seekback_cmd,
+    "vseekback": player.seekback_cmd,
 }
 
 _WAIT_SECONDS = 2
