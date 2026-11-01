@@ -51,6 +51,11 @@ DEFAULT_AUDIO_QUALITY = _get_env_str("DEFAULT_AUDIO_QUALITY", default="high").lo
 ASSISTANT_FALLBACK = _get_env_bool("ASSISTANT_FALLBACK", default=True)
 STARTUP_NOTIFY = _get_env_bool("STARTUP_NOTIFY", default=True)
 
+
+# --- Branding / links -------------------------------------------------
+UPDATE_CHANNEL = _get_env_str("UPDATE_CHANNEL", default=None)
+SUPPORT_GROUP = _get_env_str("SUPPORT_GROUP", default=None)
+
 # --- MongoDB / Logs / Streaming --------------------------------------
 MONGO_DB_URI = _get_env_str("MONGO_DB_URI", default=None)
 LOG_CHANNEL_ID = _get_env_int("LOG_CHANNEL_ID", default=None)

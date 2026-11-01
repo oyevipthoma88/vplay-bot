@@ -96,6 +96,30 @@ async def ui_buttons(client, query: CallbackQuery):
         await query.answer("Ye message ab edit nahi ho sakta.", show_alert=True)
 
 
+@bot.on_message(cmd("id"))
+@error_guard
+async def id_cmd(client, message: Message):
+    from pyrogram.enums import ChatType as _CT
+    _u = message.from_user
+    _uid = _u.id if _u else 0
+    _uname = f"@{_u.username}" if _u and _u.username else "—"
+    _name = _u.first_name if _u else "—"
+    _lines = [
+        "🆔 <b>Your Info</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"👤 <b>Name:</b> {_name}",
+        f"🔗 <b>Username:</b> {_uname}",
+        f"🆔 <b>Your ID:</b> <code>{_uid}</code>",
+        f"💬 <b>Chat ID:</b> <code>{message.chat.id}</code>",
+        f"📂 <b>Type:</b> {getattr(message.chat.type, 'name', '?')}",
+    ]
+    if _uid == config.OWNER_ID:
+        _lines.append("👑 <b>You are the bot owner ✅</b>")
+    elif message.chat.type == _CT.PRIVATE:
+        _lines.append(f"👑 <b>Owner ID:</b> <code>{config.OWNER_ID}</code>")
+    await message.reply_text("\n".join(_lines))
+
+
 @bot.on_message(cmd("ping"))
 @error_guard
 async def ping_cmd(client, message: Message):

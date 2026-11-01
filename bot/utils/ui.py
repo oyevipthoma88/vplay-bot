@@ -96,51 +96,68 @@ _MODE_LABEL = {
 def start_text(first_name: str, stats: dict = None) -> str:
     _name = html.escape(first_name or "dost")
     lines = [
-        f"👋 <b>Namaste {_name}!</b>",
-        "━━━━━━━━━━━━━━━━━━━━",
+        f"<b>👋 Hey {_name}!</b>",
         "",
-        "🎬 <b>VPlay</b> — group ke <b>video chat</b> me seedha video/audio",
+        "<blockquote>🎬 <b>VPlay</b> — group ke video chat me seedha video/audio. "
+        "3GB movie bhi <b>0 second</b> me start ho jati hai.</blockquote>",
         "",
-        "✨ <b>Features</b>",
-        "⚡ <b>0s start</b> — 3GB movie bhi instant",
-        "🎛 <b>Full control</b> — pause, seek, loop, queue",
-        "🔒 <b>Admin only</b> controls",
     ]
     if stats:
+        _c = stats.get("total_chats", 0)
+        _u = stats.get("total_users", 0)
+        _p = stats.get("total_plays", 0)
         lines.extend([
+            f"📊 <b>{_c:,}</b> chats  ·  <b>{_u:,}</b> users  ·  <b>{_p:,}</b> plays",
             "",
-            "📊 <b>Bot Stats</b>",
-            f"👥 <code>{stats.get('total_chats', 0)}</code> chats  ·  "
-            f"👤 <code>{stats.get('total_users', 0)}</code> users  ·  "
-            f"🎬 <code>{stats.get('total_plays', 0)}</code> plays",
         ])
     lines.extend([
+        "━━━━━━━━━━━━━━━━━━━━",
+        "<b>🚀 Quick Start</b>",
         "",
-        "🚀 <b>Quick Start</b>",
-        "1️⃣ Group me add → <b>admin</b> banayein",
-        "2️⃣ Video chat start karein",
-        "3️⃣ Video par reply → <code>/vplay</code>",
+        "<b>1.</b> Group me add → <b>admin</b> banayein",
+        "<b>2.</b> Video chat start karein",
+        "<b>3.</b> Video par reply → <code>/vplay</code>",
         "",
-        f"<i>VPlay v{__version__}</i>",
+        "💡 <i>Direct link? <code>/vplay &lt;url&gt;</code></i>",
+        "",
+        f"<i>v{__version__} · Built with ❤️</i>",
     ])
     return "\n".join(lines)
+
+
 
 def start_markup(include_owner: bool = True) -> Markup:
     rows = []
     if runtime.BOT_USERNAME:
         rows.append([_url_btn(
-            "➕ Group me add karein",
+            "➕ Add to Group",
             f"https://t.me/{runtime.BOT_USERNAME}?startgroup=true"
             "&admin=manage_video_chats+invite_users+delete_messages",
             style=_style("success"),
         )])
     rows.append([
         _btn("📖 Commands", "ui_help_main", style=_style("primary")),
-        _btn("❓ Setup guide", "ui_help_setup", style=_style("primary")),
+        _btn("❓ Setup", "ui_help_setup", style=_style("primary")),
     ])
+    # Updates + Support
+    _update = getattr(config, "UPDATE_CHANNEL", None)
+    _support = getattr(config, "SUPPORT_GROUP", None)
+    _row = []
+    if _update:
+        _row.append(_url_btn("📢 Updates", _update))
+    elif runtime.BOT_USERNAME:
+        _row.append(_url_btn("📢 Updates", f"https://t.me/{runtime.BOT_USERNAME}"))
+    if _support:
+        _row.append(_url_btn("💬 Support", _support))
+    else:
+        _row.append(_url_btn("💬 Support", f"tg://user?id={config.OWNER_ID}"))
+    if _row:
+        rows.append(_row)
     if include_owner:
         rows.append([_url_btn("👤 Owner", f"tg://user?id={config.OWNER_ID}")])
     return Markup(rows)
+
+
 
 def is_owner_button_error(e: BaseException) -> bool:
     low = f"{type(e).__name__} {e}".lower()

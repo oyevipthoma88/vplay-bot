@@ -25,15 +25,30 @@ def _is_owner(user_id) -> bool:
     return user_id == config.OWNER_ID
 
 
-@bot.on_message(cmd(["owner", "panel"]) & filters.private)
+@bot.on_message(cmd(["owner", "panel"]))
 @error_guard
 async def owner_cmd(client, message: Message):
-    if not message.from_user or not _is_owner(message.from_user.id):
-        await message.reply_text("🔒 Sirf bot owner ye panel use kar sakta hai.")
+    from pyrogram.enums import ChatType
+    _uid = message.from_user.id if message.from_user else 0
+    logger.info(
+        "owner_cmd: chat=%s type=%s uid=%s expected_owner=%s",
+        message.chat.id, getattr(message.chat.type, "name", "?"), _uid, config.OWNER_ID,
+    )
+    if _uid != config.OWNER_ID:
+        if message.chat.type == ChatType.PRIVATE:
+            await message.reply_text(
+                "🔒 <b>Owner-only panel</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>Aapka ID:</b> <code>{_uid}</code>\n"
+                f"👑 <b>Owner ID:</b> <code>{config.OWNER_ID}</code>\n\n"
+                "<i>Agar aap owner hain to Heroku config me <code>OWNER_ID</code> "
+                "check karein.</i>",
+            )
         return
     await message.reply_text(
         ui.owner_panel_text(),
         reply_markup=ui.owner_panel_markup(),
+        **ui.NO_PREVIEW,
     )
 
 
