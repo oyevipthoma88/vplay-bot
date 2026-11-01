@@ -87,11 +87,20 @@ async def resolve_track(message: Message, requested_by: str, requested_by_id: in
 
     media, kind = _replied_media(message)
     text = (message.text or message.caption or "").strip()
+
+    # --- Name search: /vplay <name> -> movie channel, then assistant chats ---
     if media is None and len(text.split()) > 1:
-        raise ValueError(
-            "Naam se search supported nahi hai — direct link (http...) do, "
-            "ya kisi video/audio file par reply karke /vplay bhejo."
-        )
+        from bot.core import movie_search
+
+        _query = movie_search.query_from_text(message)
+        if _query:
+            _found, _src = await movie_search.search(_query)
+            if _found is not None:
+                logger.info("resolve_track: name search hit (%s) for %r", _src, _query)
+                return movie_search.build_track(
+                    _found, requested_by, requested_by_id, _src
+                )
+            raise ValueError(movie_search.not_found_text(_query))
     if media is None:
         raise ValueError(
             "⚠️ <b>/vplay Usage</b>\n"

@@ -1,0 +1,402 @@
+"""Movie search engine — multi-channel, fuzzy, parallel.
+
+Architecture (adapted from Rohan_movies reference):
+  1. MULTI-CHANNEL   — comma-separated list, searched in parallel (asyncio.gather)
+  2. FUZZY MATCH     — rapidfuzz WRatio (typos work: "mirjapur" -> "mirzapur")
+  3. PARSE_CAPTION   — extracts title/year/quality from filename/caption
+  4. SPELLING FIX    — COMMON_FIXES map (Indian movies) + fuzzy fallback
+  5. FALLBACK        — all channels -> global assistant chats
+
+Runs on the ASSISTANT account (bot account cannot read channel history).
+Results cached per normalized query.
+"""
+import asyncio
+import html
+import re
+import time
+from typing import List, Optional, Tuple
+
+from pyrogram import enums
+from pyrogram.errors import FloodWait
+from pyrogram.types import Message
+
+from bot import config
+from bot.core import streamer
+from bot.core.clients import assistant
+from bot.core.queue import Track
+from bot.core.streamer import get_stream_url
+from bot.logger import logger
+
+try:
+    from rapidfuzz import fuzz as _rf_fuzz
+    _HAS_FUZZ = True
+except ImportError:
+    _HAS_FUZZ = False
+    logger.warning("rapidfuzz missing — token scoring fallback (pip install rapidfuzz)")
+
+_URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
+_MEDIA_ATTRS = ("video", "document", "audio", "animation", "voice", "video_note")
+_FILTERS = (
+    enums.MessagesFilter.VIDEO,
+    enums.MessagesFilter.DOCUMENT,
+    enums.MessagesFilter.AUDIO,
+)
+
+# Indian movie spelling corrections (from Rohan_movies spelling.py)
+COMMON_FIXES = {
+    "mirjapur": "mirzapur", "mirjapurr": "mirzapur", "mirzapurr": "mirzapur",
+    "hanumanash": "hanumanansh", "hanuman ansh": "hanumanansh",
+    "suryavanshi": "sooryavanshi", "suryavansh": "sooryavanshi",
+    "brahmashtra": "brahmastra", "brahmaastra": "brahmastra",
+    "krishh": "krrish", "krissh": "krrish", "krisshh": "krrish",
+    "rajneeti": "raajneeti",
+    "agneepaath": "agneepath",
+    "sholayy": "sholay", "sholaay": "sholay",
+    "donnd": "don",
+}
+
+_CACHE: dict = {}
+_CACHE_TTL = 240
+_MISS_TTL = 60
+_LAST_CALL: dict = {}
+_MIN_INTERVAL = 0.8
+_MIN_SCORE = 60
+
+_YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
+_QUALITY_RE = re.compile(
+    r"\b(480p|720p|1080p|2160p|4k|hdrip|web-?dl|webrip|bluray|hdcam|hdtc|hdts|dvdrip)\b",
+    re.IGNORECASE,
+)
+
+
+# ------------------------------------------------------------ helpers
+def normalize(text: str) -> str:
+    t = (text or "").lower()
+    t = re.sub(r"[\.\-_\[\]\(\)\{\}\+,/\\|~`!@#$%^&*+=:;\"'<>?]+", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _tokens(query: str):
+    return [w for w in normalize(query).split() if len(w) >= 2]
+
+
+def parse_caption(text: str) -> dict:
+    """Extract title/year/quality from caption or filename."""
+    raw = (text or "").strip()
+    first = raw.split("\n")[0].strip()
+    base = first.rsplit(".", 1)[0] if "." in first.rsplit("/", 1)[-1] else first
+    base = re.sub(r"\.(mkv|mp4|avi|mov|webm|m4v|ts)$", "", base, flags=re.I)
+
+    year_m = _YEAR_RE.search(base)
+    year = year_m.group(0) if year_m else ""
+    quality_m = _QUALITY_RE.search(base)
+    quality = quality_m.group(0).upper() if quality_m else ""
+
+    title = base
+    for pat in (_YEAR_RE, _QUALITY_RE):
+        title = pat.sub(" ", title)
+    title = re.sub(r"[\.\-_]+", " ", title)
+    title = re.sub(r"\s+", " ", title).strip(" -_|")
+
+    return {
+        "title": title or base or "Movie",
+        "year": year,
+        "quality": quality,
+        "full": first or raw,
+    }
+
+
+def correct_spelling(query: str, candidates: Optional[List[str]] = None) -> Optional[str]:
+    q = normalize(query)
+    if not q or len(q) < 3:
+        return None
+    if q in COMMON_FIXES:
+        return COMMON_FIXES[q]
+    if candidates and _HAS_FUZZ:
+        try:
+            from rapidfuzz import process as _rf_process
+            choices = {i: normalize(c) for i, c in enumerate(candidates) if c}
+            if choices:
+                r = _rf_process.extractOne(q, choices, scorer=_rf_fuzz.WRatio, score_cutoff=82)
+                if r:
+                    return candidates[r[0]]
+        except Exception:  # noqa: BLE001
+            pass
+    return None
+
+
+def _fuzzy_score(query: str, candidate: str) -> int:
+    qn = normalize(query)
+    cn = normalize(candidate)
+    if not qn or not cn:
+        return 0
+    if _HAS_FUZZ:
+        try:
+            base = int(_rf_fuzz.WRatio(qn, cn))
+            # Substring bonus: "toxic" vs "toxic 2024 1080p" should score high
+            if qn in cn:
+                base = max(base, 92)
+            return base
+        except Exception:  # noqa: BLE001
+            pass
+    score = 0
+    for tok in _tokens(query):
+        if tok in cn:
+            score += 15
+    if qn in cn:
+        score += 40
+    return score
+
+
+def _media_of(msg: Message):
+    for attr in _MEDIA_ATTRS:
+        media = getattr(msg, attr, None)
+        if media is not None:
+            return attr, media
+    return None, None
+
+
+def _title_of(msg: Message, media=None) -> str:
+    if media is None:
+        _, media = _media_of(msg)
+    if media is not None:
+        for attr in ("file_name", "title", "performer"):
+            val = getattr(media, attr, None)
+            if val:
+                return str(val)
+    cap = (getattr(msg, "caption", None) or getattr(msg, "text", None) or "").strip()
+    return cap.split("\n")[0][:200] or "Movie"
+
+
+def _is_playable(msg: Message) -> bool:
+    kind, media = _media_of(msg)
+    if kind is None:
+        return False
+    if kind == "document":
+        mime = (getattr(media, "mime_type", "") or "").lower()
+        return (
+            mime.startswith("video") or mime.startswith("audio")
+            or mime in ("application/x-matroska", "application/octet-stream")
+        )
+    return True
+
+
+def looks_like_name_query(message) -> bool:
+    text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+    if not text or text[:1] not in ("/", "!"):
+        return False
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        return False
+    arg = parts[1].strip()
+    if not arg or _URL_RE.match(arg):
+        return False
+    if getattr(message, "reply_to_message", None) is not None:
+        return False
+    return True
+
+
+def query_from_text(message) -> str:
+    text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+    if not text or text[:1] not in ("/", "!"):
+        return ""
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        return ""
+    arg = parts[1].strip()
+    if not arg or _URL_RE.match(arg) or len(arg) < 2:
+        return ""
+    return arg[:120]
+
+
+def movie_channels() -> List:
+    """Ordered list: owner-set channels + env fallback."""
+    out: List = []
+    try:
+        from bot.database.owner_data import get_movie_channels
+        for c in (get_movie_channels() or []):
+            if c and c not in out:
+                out.append(c)
+    except Exception:  # noqa: BLE001
+        pass
+    for attr in ("MOVIE_CHANNEL_ID", "MOVIE_CHANNEL"):
+        val = getattr(config, attr, None)
+        if val and val not in out:
+            out.append(val)
+    if not out:
+        raw = getattr(config, "MOVIE_CHANNELS", None) or ""
+        for c in str(raw).split(","):
+            c = c.strip()
+            if c:
+                out.append(int(c) if c.lstrip("-").isdigit() else c)
+    return out
+
+
+def not_found_text(query: str) -> str:
+    return (
+        "🔍 <b>Movie nahi mili</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔎 <b>Query:</b> <code>{html.escape(query[:80])}</code>\n\n"
+        "<b>Try karein:</b>\n"
+        "• Spelling check karein (<code>/vplay mirzapur</code>)\n"
+        "• File par <b>reply</b> karke <code>/vplay</code>\n"
+        "• Direct link: <code>/vplay &lt;url&gt;</code>"
+    )
+
+
+# ------------------------------------------------------------ search stages
+async def _throttle(key) -> None:
+    wait = _MIN_INTERVAL - (time.time() - _LAST_CALL.get(key, 0.0))
+    if wait > 0:
+        await asyncio.sleep(wait)
+    _LAST_CALL[key] = time.time()
+
+
+async def _live_search_one(client, chat_id, query: str, per_filter: int = 8) -> List[Message]:
+    hits = []
+    for flt in _FILTERS:
+        await _throttle((chat_id, flt))
+        try:
+            async for msg in client.search_messages(
+                chat_id=chat_id, query=query, filter=flt, limit=per_filter
+            ):
+                if _is_playable(msg):
+                    hits.append(msg)
+        except FloodWait as e:
+            await asyncio.sleep(e.value + 1)
+        except Exception as e:  # noqa: BLE001
+            logger.info("movie_search live %s %s: %s", chat_id, flt, e)
+    return hits
+
+
+async def _global_search(client, query: str, limit: int = 20) -> List[Message]:
+    if not hasattr(client, "search_global"):
+        return []
+    await _throttle("global")
+    hits = []
+    try:
+        async for msg in client.search_global(query=query, limit=limit):
+            if _is_playable(msg):
+                hits.append(msg)
+    except FloodWait as e:
+        await asyncio.sleep(e.value + 1)
+    except Exception as e:  # noqa: BLE001
+        logger.info("movie_search global: %s", e)
+    return hits
+
+
+def _best(query: str, messages: List[Message]) -> Tuple[Optional[Message], int]:
+    best, best_score = None, 0
+    for msg in messages:
+        parsed = parse_caption(_title_of(msg))
+        hay = f"{parsed['title']} {parsed.get('year', '')} {_title_of(msg)}"
+        s = _fuzzy_score(query, hay)
+        if s > best_score:
+            best, best_score = msg, s
+    return best, best_score
+
+
+# ------------------------------------------------------------ public API
+async def search(query: str, client=None) -> Tuple[Optional[Message], str]:
+    if not getattr(config, "MOVIE_SEARCH_ENABLED", True):
+        return None, ""
+
+    q = (query or "").strip()
+    if len(q) < 2:
+        return None, ""
+
+    key = normalize(q)
+    cached = _CACHE.get(key)
+    if cached:
+        ts, msg, src = cached
+        ttl = _CACHE_TTL if msg is not None else _MISS_TTL
+        if time.time() - ts < ttl:
+            return msg, src
+
+    cli = client if client is not None else assistant
+    channels = movie_channels()
+
+    # Spelling correction (apply once, cache both)
+    if channels:
+        corrected = correct_spelling(q)
+        if corrected and corrected != q:
+            logger.info("movie_search spelling: %r -> %r", q, corrected)
+            q = corrected
+
+    # Stage 1: PARALLEL live search across ALL channels
+    if channels:
+        try:
+            tasks = [_live_search_one(cli, ch, q) for ch in channels]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            merged: List[Message] = []
+            for r in results:
+                if isinstance(r, list):
+                    merged.extend(r)
+            best, score = _best(q, merged)
+            logger.info(
+                "movie_search '%s' channels=%d hits=%d best_score=%d",
+                q, len(channels), len(merged), score,
+            )
+            if best is not None and score >= _MIN_SCORE:
+                _CACHE[key] = (time.time(), best, "channel")
+                return best, "channel"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("movie_search channel stage fail: %s", e)
+
+    # Stage 2: global fallback
+    try:
+        glimit = int(getattr(config, "MOVIE_GLOBAL_LIMIT", 20) or 20)
+        best, score = _best(q, await _global_search(cli, q, glimit))
+        if best is not None and score >= _MIN_SCORE:
+            _CACHE[key] = (time.time(), best, "global")
+            logger.info("movie_search '%s' -> global (score %d)", q, score)
+            return best, "global"
+    except Exception as e:  # noqa: BLE001
+        logger.warning("movie_search global stage fail: %s", e)
+
+    _CACHE[key] = (time.time(), None, "")
+    logger.info("movie_search '%s' -> miss", q)
+    return None, ""
+
+
+def build_track(msg: Message, requested_by: str, requested_by_id: int,
+                source: str = "channel") -> Track:
+    from bot.utils.extract import _short, _thumb_from_media
+
+    kind, media = _media_of(msg)
+    if media is None:
+        raise ValueError("Movie message me playable media nahi mila.")
+
+    chat = getattr(msg, "chat", None)
+    chat_id = getattr(chat, "id", None) or getattr(msg, "chat_id", None)
+    if not chat_id:
+        raise ValueError("Movie message ka chat resolve nahi hua.")
+
+    try:
+        streamer.remember(msg, assistant)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("streamer.remember(movie) fail: %s", e)
+
+    parsed = parse_caption(_title_of(msg, media))
+    clean_title = parsed["title"] or _title_of(msg, media)
+    if parsed.get("year"):
+        clean_title = f"{clean_title} ({parsed['year']})"
+    if parsed.get("quality"):
+        clean_title = f"{clean_title} • {parsed['quality']}"
+
+    mime = (getattr(media, "mime_type", "") or "").lower()
+    is_video = kind in ("video", "animation", "video_note") or mime.startswith("video")
+    duration = int(getattr(media, "duration", 0) or 0)
+
+    return Track(
+        source=get_stream_url(chat_id, msg.id),
+        title=_short(clean_title),
+        requested_by=requested_by,
+        requested_by_id=requested_by_id,
+        is_url=True,
+        duration=duration,
+        mode="channel" if source == "channel" else "global",
+        is_video=is_video,
+        thumb_id=_thumb_from_media(media),
+    )

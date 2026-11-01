@@ -11,6 +11,7 @@ _state = {
     "maintenance": False,
     "start_pic": None,
     "default_thumb": None,
+    "movie_channel": None,
 }
 _hydrated = False
 
@@ -36,7 +37,7 @@ async def hydrate() -> None:
         from bot.database.mongo import get_setting
     except ImportError:
         return
-    for key in ("maintenance", "start_pic", "default_thumb"):
+    for key in ("maintenance", "start_pic", "default_thumb", "movie_channel"):
         try:
             val = await get_setting(key)
         except Exception as e:  # noqa: BLE001
@@ -78,3 +79,52 @@ def get_default_thumb():
 def set_default_thumb(file_id) -> None:
     _state["default_thumb"] = file_id
     _schedule("default_thumb", file_id)
+
+
+def get_movie_channel():
+    """Backward-compat: primary (first) channel."""
+    chs = _state.get("movie_channels") or []
+    if chs:
+        return chs[0]
+    return _state["movie_channel"]
+
+
+def get_movie_channels():
+    """List of configured movie channels (newest order preserved)."""
+    chs = _state.get("movie_channels") or []
+    if chs:
+        return list(chs)
+    primary = _state["movie_channel"]
+    return [primary] if primary else []
+
+
+def add_movie_channel(chat_ref) -> list:
+    chs = _state.get("movie_channels") or []
+    if _state["movie_channel"] and _state["movie_channel"] not in chs:
+        chs.append(_state["movie_channel"])
+    if chat_ref not in chs:
+        chs.append(chat_ref)
+    _state["movie_channels"] = chs
+    _state["movie_channel"] = chs[0] if chs else None
+    _schedule("movie_channels", chs)
+    return chs
+
+
+def remove_movie_channel(chat_ref) -> list:
+    chs = [c for c in (_state.get("movie_channels") or []) if c != chat_ref]
+    if _state["movie_channel"] == chat_ref:
+        _state["movie_channel"] = chs[0] if chs else None
+    _state["movie_channels"] = chs
+    _schedule("movie_channels", chs)
+    return chs
+
+
+def set_movie_channel(chat_ref) -> None:
+    """Set primary channel (also seeds the list)."""
+    _state["movie_channel"] = chat_ref
+    if chat_ref and chat_ref not in (_state.get("movie_channels") or []):
+        chs = _state.get("movie_channels") or []
+        chs.insert(0, chat_ref)
+        _state["movie_channels"] = chs
+        _schedule("movie_channels", chs)
+    _schedule("movie_channel", chat_ref)

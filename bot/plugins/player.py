@@ -225,7 +225,33 @@ async def vplay_cmd(client, message: Message):
         getattr(message.sender_chat, "title", None) or "Admin")
     user_id = message.from_user.id if message.from_user else 0
 
-    track = await resolve_track(message, user_name, user_id, client)  # validate before any UI
+    # Name search may take a few seconds — show progress, not silence.
+    _search_status = None
+    try:
+        from bot.core.movie_search import looks_like_name_query as _is_name_q
+
+        if _is_name_q(message):
+            _search_status = await message.reply_text(
+                "🔍 <b>Movie search ho rahi hai…</b>", **ui.HTML
+            )
+    except Exception:  # noqa: BLE001
+        _search_status = None
+
+    try:
+        track = await resolve_track(message, user_name, user_id, client)  # validate before any UI
+    except Exception:
+        if _search_status is not None:
+            try:
+                await _search_status.delete()
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+
+    if _search_status is not None:
+        try:
+            await _search_status.delete()
+        except Exception:  # noqa: BLE001
+            pass
 
     # Duplicate detection — same title already playing or queued
     _state = get_state(chat_id)

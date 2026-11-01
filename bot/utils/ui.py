@@ -117,12 +117,16 @@ _MODE_EMOJI = {
     "stream": "⚡",
     "link": "🔗",
     "file": "📁",
+    "channel": "📡",
+    "global": "🌐",
 }
 
 _MODE_LABEL = {
     "stream": "⚡ 0s Telegram stream",
     "link": "🔗 Direct link",
     "file": "📁 Local file",
+    "channel": "📡 Movie channel",
+    "global": "🌐 Assistant chats",
 }
 
 
@@ -434,10 +438,21 @@ def queue_text(state: ChatState) -> str:
 
 
 def owner_panel_text() -> str:
-    from bot.database.owner_data import get_default_thumb, get_start_pic, is_maintenance
+    from bot.database.owner_data import (
+        get_default_thumb, get_movie_channel, get_start_pic, is_maintenance,
+    )
     _maint = "🔴 ON" if is_maintenance() else "🟢 OFF"
     _pic = "✅ Set" if get_start_pic() else "❌ Not set"
     _thumb = "✅ Set" if get_default_thumb() else "❌ Not set"
+    try:
+        from bot.database.owner_data import get_movie_channels as _gmc
+        _mcs = _gmc() or []
+    except Exception:
+        _mcs = []
+    if _mcs:
+        _mc_line = f"✅ <code>{len(_mcs)}</code> channel(s)"
+    else:
+        _mc_line = "❌ Not set"
     _uname = runtime.BOT_USERNAME or "unknown"
     _owner_uname = getattr(config, "OWNER_USERNAME", None) or "—"
     _support = getattr(config, "SUPPORT_URL", None) or "❌ Not set"
@@ -451,11 +466,27 @@ def owner_panel_text() -> str:
         f"⚙️ <b>Maintenance:</b> {_maint}",
         f"🖼 <b>Start Pic:</b> {_pic}",
         f"🎬 <b>Default Thumb:</b> {_thumb}",
+        f"📡 <b>Movie Channel:</b> {_mc_line}",
         f"💬 <b>Support:</b> {_support}",
         "",
         "<i>Action chunein:</i>",
     ])
 
+
+
+def movie_channels_markup() -> Markup:
+    """Sub-panel for managing multiple movie channels."""
+    from bot.database.owner_data import get_movie_channels
+    P = _style("primary")
+    D = _style("danger")
+    rows = [
+        [_btn("➕ Add Channel", "own_movie_add", style=P)],
+    ]
+    chs = get_movie_channels()
+    for i, _c in enumerate(chs[:8], 1):
+        rows.append([_btn(f"🗑 Remove #{i}", f"own_movie_rm_{i}", style=D)])
+    rows.append([_btn("⬅️ Back", "own_refresh", style=P)])
+    return Markup(rows)
 
 
 def owner_panel_markup() -> Markup:
@@ -471,6 +502,7 @@ def owner_panel_markup() -> Markup:
          _btn("🎬 Default Thumb", "own_thumb", style=P)],
         [_btn("⚙️ Maintenance", "own_maintenance", style=(D if _maint else P)),
          _btn("📝 Log Group", "own_log_group", style=P)],
+        [_btn("📡 Movie Channels", "own_movie_channel", style=P)],
         [_btn("🔄 Refresh", "own_refresh", style=P),
          _btn("🔄 Restart", "own_restart", style=P)],
     ]

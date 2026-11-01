@@ -10,7 +10,7 @@ from pyrogram.errors import FloodWait, MessageNotModified
 from pyrogram.types import CallbackQuery, Message
 
 from bot import __version__, config
-from bot.core.clients import bot
+from bot.core.clients import assistant, bot
 from bot.core.queue import active_chats
 from bot.database import get_served_chats, get_stats, set_log_channel
 from bot.database.owner_data import (
@@ -144,6 +144,78 @@ async def owner_buttons(client, query: CallbackQuery):
             await _safe_edit(query.message, ui.owner_panel_text(), ui.owner_panel_markup())
             return
 
+        if action == "movie_channel":
+            from bot.database.owner_data import get_movie_channels
+            _chs = get_movie_channels()
+            _list = "\n".join(
+                f"  {i}. <code>{html.escape(str(c))}</code>"
+                for i, c in enumerate(_chs, 1)
+            ) or "  <i>(koi nahi)</i>"
+            await query.answer()
+            await _safe_edit(
+                query.message,
+                "📡 <b>Movie Channels</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"{_list}\n\n"
+                "<i>Multiple channels se parallel search hoti hai.</i>",
+                ui.movie_channels_markup(),
+            )
+            return
+
+        if action == "movie_add":
+            _AWAITING[query.from_user.id] = "movie_add"
+            await query.answer("📡 ID / @username bhejo", show_alert=True)
+            await query.message.reply_text(
+                "📡 <b>Add Movie Channel</b>\n\n"
+                "Channel ID (<code>-100123456789</code>) ya public "
+                "<code>@username</code> bhejo.\n"
+                "Assistant us channel me <b>member</b> hona chahiye.\n\n"
+                "/cancel se cancel karo."
+            )
+            return
+
+        if action == "movie_list":
+            await query.answer()
+            from bot.database.owner_data import get_movie_channels
+            _chs = get_movie_channels()
+            _list = "\n".join(
+                f"  {i}. <code>{html.escape(str(c))}</code>"
+                for i, c in enumerate(_chs, 1)
+            ) or "  <i>(koi nahi)</i>"
+            await _safe_edit(
+                query.message,
+                f"📡 <b>Movie Channels</b>\n━━━━━━━━━━━━━━━━━━━━\n{_list}",
+                ui.movie_channels_markup(),
+            )
+            return
+
+        if action.startswith("movie_rm_"):
+            try:
+                _idx = int(action[len("movie_rm_"):]) - 1
+            except ValueError:
+                await query.answer("⚠️ Bad index", show_alert=True)
+                return
+            from bot.database.owner_data import get_movie_channels, remove_movie_channel
+            _chs = get_movie_channels()
+            if 0 <= _idx < len(_chs):
+                _removed = _chs[_idx]
+                remove_movie_channel(_removed)
+                await query.answer(f"🗑 Removed {_removed}", show_alert=True)
+            else:
+                await query.answer("⚠️ Not found", show_alert=True)
+            from bot.database.owner_data import get_movie_channels as _g
+            _chs = _g()
+            _list = "\n".join(
+                f"  {i}. <code>{html.escape(str(c))}</code>"
+                for i, c in enumerate(_chs, 1)
+            ) or "  <i>(koi nahi)</i>"
+            await _safe_edit(
+                query.message,
+                f"📡 <b>Movie Channels</b>\n━━━━━━━━━━━━━━━━━━━━\n{_list}",
+                ui.movie_channels_markup(),
+            )
+            return
+
         if action == "thumb":
             _AWAITING[query.from_user.id] = "thumb"
             await query.answer("🎬 Video/photo bhejo", show_alert=True)
@@ -209,6 +281,73 @@ async def _pending_input(client, message: Message):
         await message.reply_text("❌ Cancelled.")
         return
     if text.startswith("/"):
+        return
+
+    if state == "movie_add":
+        raw = text.strip()
+        chat_ref = raw if raw.startswith("@") else None
+        if chat_ref is None:
+            try:
+                chat_ref = int(raw)
+            except ValueError:
+                chat_ref = None
+        if chat_ref is None:
+            await message.reply_text(
+                "⚠️ Valid chat ID ya @username bhejo. /cancel se cancel karo."
+            )
+            return
+        try:
+            chat = await assistant.get_chat(chat_ref)
+        except Exception as e:  # noqa: BLE001
+            await message.reply_text(
+                f"⚠️ Assistant us chat ko access nahi kar paya "
+                f"(<code>{type(e).__name__}</code>).\n"
+                "Pehle assistant ko channel me add karein."
+            )
+            return
+        from bot.database.owner_data import add_movie_channel, get_movie_channels
+
+        _chs = add_movie_channel(chat_ref)
+        _AWAITING.pop(message.from_user.id, None)
+        await message.reply_text(
+            f"✅ <b>Channel added</b>\n"
+            f"📡 {chat.title or chat_ref}\n"
+            f"🆔 <code>{chat.id}</code>\n"
+            f"📊 Total: <code>{len(_chs)}</code>"
+        )
+        return
+
+    if state == "movie_channel":
+        raw = text.strip()
+        chat_ref = raw if raw.startswith("@") else None
+        if chat_ref is None:
+            try:
+                chat_ref = int(raw)
+            except ValueError:
+                chat_ref = None
+        if chat_ref is None:
+            await message.reply_text(
+                "⚠️ Valid chat ID ya @username bhejo. /cancel se cancel karo."
+            )
+            return
+        try:
+            chat = await assistant.get_chat(chat_ref)
+        except Exception as e:  # noqa: BLE001
+            await message.reply_text(
+                f"⚠️ Assistant us chat ko access nahi kar paya "
+                f"(<code>{type(e).__name__}</code>).\n"
+                "Pehle assistant ko channel me add karein."
+            )
+            return
+        from bot.database.owner_data import set_movie_channel
+
+        set_movie_channel(chat_ref)
+        _AWAITING.pop(message.from_user.id, None)
+        await message.reply_text(
+            f"✅ <b>Movie channel set</b>\n"
+            f"📡 {chat.title or chat_ref}\n"
+            f"🆔 <code>{chat.id}</code>"
+        )
         return
 
     if state == "thumb":
