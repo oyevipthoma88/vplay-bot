@@ -1,6 +1,7 @@
 import time
 
 from pyrogram import filters
+from pyrogram.enums import ParseMode
 from pyrogram.enums import ChatType
 from pyrogram.errors import MessageNotModified
 from pyrogram.types import CallbackQuery, Message
@@ -74,9 +75,9 @@ async def ui_buttons(client, query: CallbackQuery):
     async def _safe_edit(text, markup):
         try:
             if getattr(query.message, "photo", None):
-                await query.message.edit_caption(caption=text, reply_markup=markup, parse_mode="html")
+                await query.message.edit_caption(caption=text, reply_markup=markup, parse_mode=ParseMode.HTML)
             else:
-                await query.message.edit_text(text, reply_markup=markup, parse_mode="html")
+                await query.message.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
         except MessageNotModified:
             pass
         except Exception:

@@ -2,6 +2,7 @@ import html
 import os
 
 from pyrogram import filters
+from pyrogram.enums import ParseMode
 from pyrogram.enums import ChatMemberStatus
 from pyrogram.errors import MessageNotModified
 from pyrogram.types import CallbackQuery, Message
@@ -62,7 +63,7 @@ def _brand_thumb(path: str) -> str:
 async def _send_photo_card(chat_id: int, thumb_id: str, text: str, markup) -> Message:
     """Send photo card. On THUMBNAIL->PHOTO mismatch, download and reupload."""
     try:
-        return await bot.send_photo(chat_id, thumb_id, caption=text, reply_markup=markup, parse_mode="html")
+        return await bot.send_photo(chat_id, thumb_id, caption=text, reply_markup=markup, parse_mode=ParseMode.HTML)
     except Exception as e:
         err = str(e).lower()
         if "expected photo" in err or "thumbnail" in err:
@@ -72,7 +73,7 @@ async def _send_photo_card(chat_id: int, thumb_id: str, text: str, markup) -> Me
                 path = await bot.download_media(thumb_id)
                 if path:
                     path = _brand_thumb(path)
-                    return await bot.send_photo(chat_id, path, caption=text, reply_markup=markup, parse_mode="html")
+                    return await bot.send_photo(chat_id, path, caption=text, reply_markup=markup, parse_mode=ParseMode.HTML)
             except Exception as dl_err:
                 logger.warning("thumbnail download fail: %s", dl_err)
             finally:
@@ -105,7 +106,7 @@ async def _post_card(chat_id: int, text: str, edit_message: Message = None,
             _is_photo = bool(getattr(edit_message, "photo", None))
             if thumb:
                 if _is_photo:
-                    msg = await edit_message.edit_caption(caption=text, reply_markup=markup, parse_mode="html")
+                    msg = await edit_message.edit_caption(caption=text, reply_markup=markup, parse_mode=ParseMode.HTML)
                 else:
                     try:
                         await edit_message.delete()
@@ -157,7 +158,7 @@ async def _safe_edit(message: Message, text: str, markup=None) -> None:
     """Edit text OR caption based on message type. Never raises."""
     try:
         if getattr(message, "photo", None):
-            await message.edit_caption(caption=text, reply_markup=markup, parse_mode="html")
+            await message.edit_caption(caption=text, reply_markup=markup, parse_mode=ParseMode.HTML)
         else:
             await message.edit_text(text, reply_markup=markup, **ui.HTML)
     except MessageNotModified:

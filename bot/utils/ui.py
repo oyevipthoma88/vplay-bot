@@ -2,6 +2,7 @@
 consistent (start screen, help, now-playing card, queue)."""
 import html
 
+from pyrogram.enums import ParseMode
 from pyrogram.types import InlineKeyboardButton as Btn
 from pyrogram.types import InlineKeyboardMarkup as Markup
 
@@ -15,7 +16,7 @@ except ImportError:  # pragma: no cover - very old pyrogram
     NO_PREVIEW = {"disable_web_page_preview": True}
 
 
-HTML = {"parse_mode": "html"}
+HTML = {"parse_mode": ParseMode.HTML}
 
 from bot import __version__, config
 from bot.core import runtime

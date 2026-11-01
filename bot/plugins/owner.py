@@ -5,6 +5,7 @@ State persists via bot.database.owner_data (Mongo + in-memory fallback).
 import asyncio
 
 from pyrogram import filters
+from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait, MessageNotModified
 from pyrogram.types import CallbackQuery, Message
 
