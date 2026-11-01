@@ -17,6 +17,7 @@ from bot.plugins import player  # noqa: F401,E402
 from bot.plugins import diagnostics  # noqa: F401,E402
 from bot.plugins import fallback  # noqa: F401,E402
 from bot.plugins import owner  # noqa: F401,E402
+from bot.plugins import logger as _logger_plugin  # noqa: F401,E402
 
 from bot import __version__, config
 from bot.core import runtime, streamer
