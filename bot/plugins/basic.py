@@ -25,12 +25,18 @@ async def start_cmd(client, message: Message):
             await add_served_user(message.from_user.id, message.from_user.first_name or "")
         name = message.from_user.first_name if message.from_user else ""
         try:
-            await message.reply_text(ui.start_text(name), reply_markup=ui.start_markup(),
+            _stats = await get_stats()
+        except Exception:  # noqa: BLE001
+            _stats = None
+        try:
+            await message.reply_text(ui.start_text(name, stats=_stats),
+                                     reply_markup=ui.start_markup(),
                                      **ui.NO_PREVIEW)
         except Exception as e:  # noqa: BLE001
             if not ui.is_owner_button_error(e):
                 raise
-            await message.reply_text(ui.start_text(name), reply_markup=ui.start_markup(False),
+            await message.reply_text(ui.start_text(name, stats=_stats),
+                                     reply_markup=ui.start_markup(False),
                                      **ui.NO_PREVIEW)
     else:
         await message.reply_text(ui.group_start_text(), reply_markup=ui.help_markup("main", False))
@@ -51,17 +57,25 @@ async def ui_buttons(client, query: CallbackQuery):
             await query.message.delete()
         elif data == "start":
             try:
-                await query.message.edit_text(ui.start_text(query.from_user.first_name),
-                                              reply_markup=ui.start_markup(),
-                                              **ui.NO_PREVIEW)
+                _stats = await get_stats()
+            except Exception:  # noqa: BLE001
+                _stats = None
+            try:
+                await query.message.edit_text(
+                    ui.start_text(query.from_user.first_name, stats=_stats),
+                    reply_markup=ui.start_markup(),
+                    **ui.NO_PREVIEW,
+                )
             except MessageNotModified:
                 raise
             except Exception as e:  # noqa: BLE001
                 if not ui.is_owner_button_error(e):
                     raise
-                await query.message.edit_text(ui.start_text(query.from_user.first_name),
-                                              reply_markup=ui.start_markup(False),
-                                              **ui.NO_PREVIEW)
+                await query.message.edit_text(
+                    ui.start_text(query.from_user.first_name, stats=_stats),
+                    reply_markup=ui.start_markup(False),
+                    **ui.NO_PREVIEW,
+                )
         else:
             page = data[len("help_"):]
             private = query.message.chat.type == ChatType.PRIVATE
@@ -80,10 +94,12 @@ async def ping_cmd(client, message: Message):
     m = await message.reply_text("🏓 …")
     ms = (time.perf_counter() - t0) * 1000
     await m.edit_text(
-        f"🏓 <b>Pong!</b> <code>{ms:.0f} ms</code>\n"
-        f"⏱ Uptime: <code>{format_duration(int(time.time() - _BOOT))}</code>\n"
-        f"🎬 Active calls: <code>{active_chats()}</code>\n"
-        f"<i>VPlay v{__version__}</i>"
+        "🏓 <b>Pong!</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚡ <b>Latency:</b> <code>{ms:.0f} ms</code>\n"
+        f"⏱ <b>Uptime:</b> <code>{format_duration(int(time.time() - _BOOT))}</code>\n"
+        f"🎬 <b>Active calls:</b> <code>{active_chats()}</code>\n"
+        f"📦 <b>Version:</b> <i>VPlay v{__version__}</i>"
     )
 
 
@@ -92,12 +108,13 @@ async def ping_cmd(client, message: Message):
 async def stats_cmd(client, message: Message):
     s = await get_stats()
     await message.reply_text(
-        "📊 <b>VPlay Stats</b>\n\n"
-        f"🗄 Database: {'✅ MongoDB' if s['is_mongo'] else '⚠️ In-memory (MONGO_DB_URI set karein)'}\n"
-        f"👥 Chats: <code>{s['total_chats']}</code>\n"
-        f"👤 Users: <code>{s['total_users']}</code>\n"
-        f"🎬 Plays: <code>{s['total_plays']}</code>\n"
-        f"📡 Active calls: <code>{active_chats()}</code>"
+        "📊 <b>VPlay Stats</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🗄 <b>Database:</b> {'✅ MongoDB' if s['is_mongo'] else '⚠️ In-memory'}\n"
+        f"👥 <b>Chats:</b> <code>{s['total_chats']}</code>\n"
+        f"👤 <b>Users:</b> <code>{s['total_users']}</code>\n"
+        f"🎬 <b>Plays:</b> <code>{s['total_plays']}</code>\n"
+        f"📡 <b>Active calls:</b> <code>{active_chats()}</code>"
     )
 
 

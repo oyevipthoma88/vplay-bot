@@ -33,6 +33,16 @@ except ImportError:
         _HAS_BUTTON_STYLE = False
 
 
+def _url_btn(text, url, style=None):
+    """InlineKeyboardButton with URL + optional color."""
+    if style is not None and _HAS_BUTTON_STYLE:
+        try:
+            return Btn(text, url=url, style=style)
+        except (TypeError, ValueError, AttributeError):
+            pass
+    return Btn(text, url=url)
+
+
 def _style(name: str):
     """Get ButtonStyle enum member by name (PRIMARY/SUCCESS/DANGER), or None."""
     if not _HAS_BUTTON_STYLE or _BS is None:
@@ -83,38 +93,54 @@ _MODE_LABEL = {
 # --- Start / help -------------------------------------------------------
 
 
-def start_text(first_name: str) -> str:
-    return (
-        f"👋 <b>Namaste {html.escape(first_name or 'dost')}!</b>\n\n"
-        "Main <b>VPlay</b> hoon — group ke <b>video chat</b> me seedha video aur audio "
-        "chalane wala bot.\n\n"
-        "⚡ <b>0 second start</b> — 3 GB movie bhi bina download turant chalti hai\n"
-        "🎛 <b>Full control</b> — pause, skip, seek, loop, queue\n"
-        "🔒 <b>Admin only</b> control (chahein to band karein)\n\n"
-        "<b>Shuru kaise karein?</b>\n"
-        "1️⃣ Mujhe group me add karke admin banayein\n"
-        "2️⃣ Video chat start karein\n"
-        "3️⃣ Kisi video par reply karke <code>/vplay</code> bhejein\n\n"
-        f"<i>VPlay v{__version__}</i>"
-    )
-
+def start_text(first_name: str, stats: dict = None) -> str:
+    _name = html.escape(first_name or "dost")
+    lines = [
+        f"👋 <b>Namaste {_name}!</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "🎬 <b>VPlay</b> — group ke <b>video chat</b> me seedha video/audio",
+        "",
+        "✨ <b>Features</b>",
+        "⚡ <b>0s start</b> — 3GB movie bhi instant",
+        "🎛 <b>Full control</b> — pause, seek, loop, queue",
+        "🔒 <b>Admin only</b> controls",
+    ]
+    if stats:
+        lines.extend([
+            "",
+            "📊 <b>Bot Stats</b>",
+            f"👥 <code>{stats.get('total_chats', 0)}</code> chats  ·  "
+            f"👤 <code>{stats.get('total_users', 0)}</code> users  ·  "
+            f"🎬 <code>{stats.get('total_plays', 0)}</code> plays",
+        ])
+    lines.extend([
+        "",
+        "🚀 <b>Quick Start</b>",
+        "1️⃣ Group me add → <b>admin</b> banayein",
+        "2️⃣ Video chat start karein",
+        "3️⃣ Video par reply → <code>/vplay</code>",
+        "",
+        f"<i>VPlay v{__version__}</i>",
+    ])
+    return "\n".join(lines)
 
 def start_markup(include_owner: bool = True) -> Markup:
     rows = []
     if runtime.BOT_USERNAME:
-        rows.append([Btn(
+        rows.append([_url_btn(
             "➕ Group me add karein",
-            url=f"https://t.me/{runtime.BOT_USERNAME}?startgroup=true"
-                "&admin=manage_video_chats+invite_users+delete_messages",
+            f"https://t.me/{runtime.BOT_USERNAME}?startgroup=true"
+            "&admin=manage_video_chats+invite_users+delete_messages",
+            style=_style("success"),
         )])
-    rows.append([Btn("📖 Commands", callback_data="ui_help_main"),
-                 _btn("❓ Setup guide", "ui_help_setup", style=_style("primary"))])
+    rows.append([
+        _btn("📖 Commands", "ui_help_main", style=_style("primary")),
+        _btn("❓ Setup guide", "ui_help_setup", style=_style("primary")),
+    ])
     if include_owner:
-        # Telegram rejects the whole message (BUTTON_USER_PRIVACY_RESTRICTED)
-        # if the owner's privacy hides them — callers retry without it.
-        rows.append([Btn("👤 Owner", url=f"tg://user?id={config.OWNER_ID}")])
+        rows.append([_url_btn("👤 Owner", f"tg://user?id={config.OWNER_ID}")])
     return Markup(rows)
-
 
 def is_owner_button_error(e: BaseException) -> bool:
     low = f"{type(e).__name__} {e}".lower()
@@ -124,52 +150,73 @@ def is_owner_button_error(e: BaseException) -> bool:
 
 def group_start_text() -> str:
     return (
-        "✅ <b>VPlay ready hai!</b>\n\n"
-        "Video chat start karein aur kisi video/audio par reply karke "
-        "<code>/vplay</code> bhejein.\n/help — saari commands"
+        "✅ <b>VPlay ready hai!</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🎬 Video chat start karein, phir kisi video/audio par reply karke:\n"
+        "<code>/vplay</code>\n\n"
+        "📖 <b>Quick commands</b>\n"
+        "<code>/vplay</code> — play (reply / link)\n"
+        "<code>/vpause</code> · <code>/vresume</code>\n"
+        "<code>/vseek 90</code> — seek\n"
+        "<code>/vskip</code> · <code>/vstop</code>\n"
+        "<code>/vqueue</code> · <code>/vloop</code>\n\n"
+        "📚 Saari commands ke liye: <code>/help</code>"
     )
-
 
 HELP_PAGES = {
     "main": (
-        "📖 <b>VPlay Commands</b>\n\nCategory chunein 👇",
+        "📖 <b>VPlay Commands</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Category chunein 👇",
     ),
     "play": (
-        "🎬 <b>Playback</b>\n\n"
-        "<code>/vplay</code> — file par reply karke\n"
-        "<code>/vplay &lt;link&gt;</code> — direct video/audio link\n"
+        "🎬 <b>Playback Commands</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<b>▶️ Play</b>\n"
+        "<code>/vplay</code> — file/link reply\n"
+        "<code>/vplay &lt;url&gt;</code> — direct link\n\n"
+        "<b>⏯ Control</b>\n"
         "<code>/vpause</code> · <code>/vresume</code>\n"
+        "<code>/vseek 90</code> · <code>/seek 1:30</code>\n"
+        "<code>/vmute</code> · <code>/vunmute</code>\n"
+        "<code>/vvolume 150</code>\n\n"
+        "<b>⏭ Flow</b>\n"
         "<code>/vskip</code> — agla track\n"
-        "<code>/vstop</code> — band + video chat chhodo\n"
-        "<code>/vseek 90</code> ya <code>/vseek 1:30</code>\n"
-        "<code>/vmute</code> · <code>/vunmute</code>",
+        "<code>/vstop</code> — band + leave call"
     ),
     "queue": (
-        "📜 <b>Queue</b>\n\n"
+        "📜 <b>Queue Commands</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
         "<code>/vqueue</code> — queue list\n"
-        "<code>/vnp</code> — abhi kya chal raha hai (player card)\n"
-        "<code>/vloop</code> — current track repeat ON/OFF\n"
-        "<code>/vshuffle</code> — queue shuffle",
+        "<code>/vnp</code> — now playing card\n"
+        "<code>/vshuffle</code> — shuffle\n"
+        "<code>/vloop</code> — loop mode\n\n"
+        "<b>Loop modes:</b>\n"
+        "🔁 <b>OFF</b> → normal advance\n"
+        "🔁 <b>TRACK</b> → current repeat\n"
+        "🔁 <b>QUEUE</b> → end me wapas"
     ),
     "system": (
-        "🛠 <b>System</b>\n\n"
-        "<code>/ping</code> — bot alive check\n"
+        "🛠 <b>System Commands</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<code>/ping</code> — alive + latency\n"
         "<code>/stats</code> — chats, users, plays\n"
-        "<code>/vdebug</code> — bot/assistant permissions check\n"
-        "<code>/setlog &lt;chat_id&gt;</code> — log group (owner)",
+        "<code>/vdebug</code> — permissions check\n"
+        "<code>/vcleanup</code> — temp cleanup\n"
+        "<code>/setlog &lt;id&gt;</code> — log group (owner)"
     ),
     "setup": (
-        "❓ <b>Setup guide</b>\n\n"
-        "1. Bot ko group me add karke <b>admin</b> banayein "
-        "(Invite users + Manage Video Chats)\n"
-        "2. Assistant account khud join ho jayega. Use bhi <b>admin</b> banayein "
-        "with <b>Manage Video Chats</b>\n"
-        "3. Video chat start karein (ya assistant admin ho to wo khud start karega)\n"
-        "4. Video par reply karke <code>/vplay</code>\n\n"
-        "Problem? Group me <code>/vdebug</code> bhejein.",
+        "❓ <b>Setup Guide</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<b>1.</b> Bot ko group me add → <b>admin</b>\n"
+        "   <i>Permissions: Invite + Manage Video Chats</i>\n\n"
+        "<b>2.</b> Assistant bhi admin banayein\n"
+        "   <i>Same permissions</i>\n\n"
+        "<b>3.</b> Video chat start karein\n\n"
+        "<b>4.</b> Video par reply → <code>/vplay</code>\n\n"
+        "🆘 <i>Problem? Group me</i> <code>/vdebug</code>"
     ),
 }
-
 
 def help_text(page: str = "main") -> str:
     return HELP_PAGES.get(page, HELP_PAGES["main"])[0]
