@@ -160,7 +160,10 @@ async def vskip_cmd(client, message: Message):
         await _post_card(message.chat.id, ui.now_playing_card(get_state(message.chat.id), "⏭ <b>Skipped — ab chal raha hai</b>"))
     else:
         await _drop_card(message.chat.id)
-        await message.reply_text("⏭ Queue khali hai — video chat se nikal gaya.")
+        await message.reply_text(
+        "⏭ <b>Queue khali hai</b> — agla track nahi hai.\n"
+        "<code>/vplay</code> se naya track add karein."
+    )
 
 
 @bot.on_message(cmd(["vstop", "vend"]) & _GROUP)
@@ -183,7 +186,11 @@ async def vstop_cmd(client, message: Message):
 async def vseek_cmd(client, message: Message):
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2:
-        await message.reply_text("Usage: <code>/vseek 90</code> ya <code>/vseek 1:30</code>")
+        _cur = format_duration(get_state(message.chat.id).elapsed())
+        await message.reply_text(
+            f"Usage: <code>/vseek 90</code> ya <code>/vseek 1:30</code>\n"
+            f"Abhi: <b>{_cur}</b> pe chal raha hai."
+        )
         return
     seconds = parse_time_to_seconds(parts[1].split()[0])
     used = await player_core.seek(message.chat.id, seconds)
@@ -395,7 +402,7 @@ _register_private_hint(
     [
         "vplay", "play", "vpause", "vresume", "vskip", "vstop", "vend",
         "vseek", "vqueue", "vplaylist", "vnowplaying", "vnp", "vcurrent",
-        "vmute", "vunmute", "vloop", "vshuffle", "seek",
+        "vmute", "vunmute", "vloop", "vshuffle", "seek", "vcleanup",
     ]
 )
 
@@ -419,4 +426,16 @@ async def on_bot_added(client, message: _Message):
             )
         except Exception:
             pass
+
+@bot.on_message(cmd("vcleanup") & _GROUP)
+@error_guard
+@admin_only
+async def vcleanup_cmd(client, message: Message):
+    """Purani temp files delete karo (admin only)."""
+    from bot.core.storage import cleanup_temp_files
+    removed = cleanup_temp_files(max_age_hours=0)
+    if removed:
+        await message.reply_text(f"🧹 <b>Cleanup done</b> — {removed} temp files delete hui.")
+    else:
+        await message.reply_text("🧹 Cleanup ke liye koi temp file nahi mili.")
 
