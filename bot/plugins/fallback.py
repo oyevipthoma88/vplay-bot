@@ -43,6 +43,9 @@ COMMANDS = {
     "vunmute": player.vunmute_cmd,
     "vloop": player.vloop_cmd,
     "vshuffle": player.vshuffle_cmd,
+    "seek": player.vseek_cmd,
+    "vvolume": player.vvolume_cmd,
+    "vcleanup": player.vcleanup_cmd,
 }
 
 _WAIT_SECONDS = 2
