@@ -41,6 +41,12 @@ def error_guard(func):
     @functools.wraps(func)
     async def wrapper(client: Client, message: Message, *args, **kwargs):
         try:
+            from bot.utils.commands import mark_seen
+
+            mark_seen(message)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             return await func(client, message, *args, **kwargs)
         except (ValueError, RuntimeError) as e:
             logger.info("/%s -> user error: %s", func.__name__, e)

@@ -44,7 +44,7 @@ def _short(title: str, limit: int = 60) -> str:
     return title if len(title) <= limit else title[: limit - 3] + "..."
 
 
-async def resolve_track(message: Message, requested_by: str, requested_by_id: int) -> Track:
+async def resolve_track(message: Message, requested_by: str, requested_by_id: int, client=None) -> Track:
     """Builds a Track. Raises ValueError with a user-facing message if
     there's nothing usable to play.
     """
@@ -86,7 +86,7 @@ async def resolve_track(message: Message, requested_by: str, requested_by_id: in
 
     # Hand the replied message straight to the streamer: no extra API call
     # per HTTP request, and the file's DC connection starts warming now.
-    streamer.remember(replied)
+    streamer.remember(replied, client)
 
     size_mb = (getattr(media, "file_size", 0) or 0) / 1e6
     logger.info("0s stream: msg %s (%s, %.1f MB) — no download", replied.id, title, size_mb)

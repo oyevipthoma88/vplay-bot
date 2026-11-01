@@ -26,12 +26,12 @@ async def start_cmd(client, message: Message):
         name = message.from_user.first_name if message.from_user else ""
         try:
             await message.reply_text(ui.start_text(name), reply_markup=ui.start_markup(),
-                                     disable_web_page_preview=True)
+                                     **ui.NO_PREVIEW)
         except Exception as e:  # noqa: BLE001
             if not ui.is_owner_button_error(e):
                 raise
             await message.reply_text(ui.start_text(name), reply_markup=ui.start_markup(False),
-                                     disable_web_page_preview=True)
+                                     **ui.NO_PREVIEW)
     else:
         await message.reply_text(ui.group_start_text(), reply_markup=ui.help_markup("main", False))
 
@@ -53,7 +53,7 @@ async def ui_buttons(client, query: CallbackQuery):
             try:
                 await query.message.edit_text(ui.start_text(query.from_user.first_name),
                                               reply_markup=ui.start_markup(),
-                                              disable_web_page_preview=True)
+                                              **ui.NO_PREVIEW)
             except MessageNotModified:
                 raise
             except Exception as e:  # noqa: BLE001
@@ -61,7 +61,7 @@ async def ui_buttons(client, query: CallbackQuery):
                     raise
                 await query.message.edit_text(ui.start_text(query.from_user.first_name),
                                               reply_markup=ui.start_markup(False),
-                                              disable_web_page_preview=True)
+                                              **ui.NO_PREVIEW)
         else:
             page = data[len("help_"):]
             private = query.message.chat.type == ChatType.PRIVATE

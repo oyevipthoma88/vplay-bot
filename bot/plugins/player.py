@@ -99,7 +99,7 @@ async def vplay_cmd(client, message: Message):
         getattr(message.sender_chat, "title", None) or "Admin")
     user_id = message.from_user.id if message.from_user else 0
 
-    track = await resolve_track(message, user_name, user_id)  # validate before any UI
+    track = await resolve_track(message, user_name, user_id, client)  # validate before any UI
     # One status message only — every extra edit is a Telegram round-trip
     # that delayed the actual start.
     status = await message.reply_text("⚡ <b>Stream start ho raha hai…</b>")

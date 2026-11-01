@@ -48,7 +48,7 @@ AUTH_ONLY_ADMINS = _get_env_bool("AUTH_ONLY_ADMINS", default=True)
 DOWNLOADS_DIR = _get_env_str("DOWNLOADS_DIR", default="downloads")
 DEFAULT_VIDEO_QUALITY = _get_env_str("DEFAULT_VIDEO_QUALITY", default="sd_480p").lower()
 DEFAULT_AUDIO_QUALITY = _get_env_str("DEFAULT_AUDIO_QUALITY", default="high").lower()
-ASSISTANT_FALLBACK = _get_env_bool("ASSISTANT_FALLBACK", default=False)
+ASSISTANT_FALLBACK = _get_env_bool("ASSISTANT_FALLBACK", default=True)
 STARTUP_NOTIFY = _get_env_bool("STARTUP_NOTIFY", default=True)
 
 # --- MongoDB / Logs / Streaming --------------------------------------

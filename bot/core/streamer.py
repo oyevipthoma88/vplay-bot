@@ -123,7 +123,7 @@ def _parse_range(rng: str, file_size: int):
     return start, end, status
 
 
-async def _pump(client, message, resp, start: int, length: int, file_size: int) -> None:
+async def _pump(client, message, resp, start: int, length: int, file_size: int, sent=None) -> None:
     skip = start % CHUNK_SIZE
     remaining = length if file_size else float("inf")
     gen = client.stream_media(message, offset=start // CHUNK_SIZE)
@@ -135,6 +135,8 @@ async def _pump(client, message, resp, start: int, length: int, file_size: int) 
             if len(chunk) > remaining:
                 chunk = chunk[: int(remaining)]
             await resp.write(chunk)
+            if sent is not None:
+                sent[0] += len(chunk)
             remaining -= len(chunk)
             if remaining <= 0:
                 break
@@ -181,13 +183,36 @@ async def _handle_stream(request: web.Request) -> web.StreamResponse:
     await resp.prepare(request)
 
     logger.info("Stream msg %s: %.1f MB, range %s-%s", message_id, file_size / 1e6, start, end)
+    sent = [0]
     try:
         try:
+            await _pump(client, message, resp, start, length, file_size, sent)
+        except (asyncio.CancelledError, ConnectionResetError, FloodWait):
+            raise
+        except Exception as first:  # noqa: BLE001
+            # Stale file reference, or the cached message belongs to the
+            # other account (file refs are per-account). If nothing was
+            # written yet, refetch via the OTHER client and retry once —
+            # otherwise ffprobe gets an empty body and PyTgCalls crashes
+            # with ProcessLookupError.
+            if sent[0]:
+                raise
+            logger.info("Stream msg %s: %s — refetch + retry", message_id, first)
+            _cache.pop((chat_id, message_id), None)
+            other = assistant if client is bot else bot
+            client, message = None, None
+            for c in (other, assistant if other is bot else bot):
+                try:
+                    m = await c.get_messages(chat_id, message_id)
+                    if m and not getattr(m, "empty", False) and _get_media(m):
+                        client, message = c, m
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if message is None:
+                raise first
+            _cache[(chat_id, message_id)] = (client, message, time.time())
             await _pump(client, message, resp, start, length, file_size)
-        except FileReferenceExpired:
-            client, message = await _fetch(chat_id, message_id, refresh=True)
-            if message is not None:
-                await _pump(client, message, resp, start, length, file_size)
     except (asyncio.CancelledError, ConnectionResetError):
         pass  # ffmpeg seeked / closed — normal
     except FloodWait as fw:

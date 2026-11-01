@@ -93,6 +93,50 @@ def _audio_quality():
     return AudioQuality.HIGH
 
 
+async def preflight_probe(source: str) -> None:
+    """Runs ffprobe ourselves BEFORE handing the source to PyTgCalls.
+
+    PyTgCalls' own ffprobe check calls `kill()` on an ffprobe that has
+    already exited when the output is empty, which surfaces as a useless
+    `ProcessLookupError`. Probing first gives the real ffprobe error (bad
+    link, 403/404, streamer could not read the Telegram file, ffmpeg
+    missing) as a clear message.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-print_format", "json", "-show_format",
+            "-show_streams", source,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            "⚠️ Server par ffmpeg/ffprobe install nahi hai. Heroku par "
+            "'heroku-community/apt' buildpack add karein (Aptfile me ffmpeg hai), phir redeploy."
+        ) from e
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except asyncio.TimeoutError as e:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        raise RuntimeError(
+            "⚠️ Media 30 second me read nahi hui (file/link bahut slow hai). Dobara try karein."
+        ) from e
+    try:
+        import json
+
+        data = json.loads(out.decode("utf-8", "ignore") or "{}")
+    except ValueError:
+        data = {}
+    if not data.get("streams"):
+        reason = (err.decode("utf-8", "ignore").strip().splitlines() or ["koi stream nahi mili"])[-1]
+        raise RuntimeError(
+            "⚠️ Media read nahi ho payi — file/link sahi nahi hai ya access nahi mila.\n"
+            f"(ffprobe: {reason[:200]})"
+        )
+
+
 def describe_error(e: BaseException) -> str:
     """Never-empty description of an exception: 'Type: message' or 'Type'."""
     name = type(e).__name__
@@ -188,6 +232,9 @@ def _translate_play_error(e: BaseException) -> str:
     if "timeout" in low or "timedout" in low:
         return ("Video chat se connect hone me time out ho gaya. Video chat band karke "
                 "dobara start karein, phir /vplay bhejein.")
+    if "processlookuperror" in low or "jsondecodeerror" in low:
+        return ("Media file read nahi ho payi (ffprobe ko data nahi mila). File/link check "
+                "karein aur dobara /vplay bhejein.")
     if "ffmpeg" in low or "filenotfound" in low or "fileerror" in low or "nosource" in low \
             or "noaudiosource" in low or "novideosource" in low:
         return ("Media file read nahi ho payi (ffmpeg). File corrupt ho sakti hai, ya server "
@@ -212,6 +259,7 @@ async def _start_stream(chat_id: int, track: Track, offset: int = 0) -> None:
     state = get_state(chat_id)
     is_switch = state.current is not None  # already in the call -> just switch source
     was_paused = state.is_paused
+    await preflight_probe(track.source)
     if not is_switch:
         await ensure_group_call(chat_id)
 
@@ -228,6 +276,11 @@ async def _start_stream(chat_id: int, track: Track, offset: int = 0) -> None:
             last_error = e
         except Exception as e:  # noqa: BLE001
             last_error = e
+            if type(e).__name__ in ("ProcessLookupError", "JSONDecodeError"):
+                await asyncio.sleep(1)  # transient ffprobe read failure — just retry
+                if attempt == 1:
+                    logger.warning("Chat %s: ffprobe read fail, retrying", chat_id)
+                    continue
         logger.warning("Chat %s: play attempt %s failed — %s", chat_id, attempt, describe_error(last_error))
         if attempt == 1:
             # Drop a stale/dead connection and retry with a fresh join.

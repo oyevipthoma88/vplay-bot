@@ -23,6 +23,7 @@ _CMD_RE = re.compile(r"^[/!]([A-Za-z_]+)(?:@(\w+))?(?:\s|$)")
 
 COMMANDS = {
     "help": basic.help_cmd,
+    "stats": basic.stats_cmd,
     "ping": basic.ping_cmd,
     "vdebug": diagnostics.vdebug_cmd,
     "vplay": player.vplay_cmd,
@@ -44,7 +45,7 @@ COMMANDS = {
     "vshuffle": player.vshuffle_cmd,
 }
 
-_WAIT_SECONDS = 4
+_WAIT_SECONDS = 2
 
 
 if config.ASSISTANT_FALLBACK:

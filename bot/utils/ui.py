@@ -5,6 +5,15 @@ import html
 from pyrogram.types import InlineKeyboardButton as Btn
 from pyrogram.types import InlineKeyboardMarkup as Markup
 
+# Kurigram 2.2+ removed `disable_web_page_preview`; it's now
+# `link_preview_options`. Old Pyrogram only knows the old kwarg.
+try:
+    from pyrogram.types import LinkPreviewOptions
+
+    NO_PREVIEW = {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
+except ImportError:  # pragma: no cover - very old pyrogram
+    NO_PREVIEW = {"disable_web_page_preview": True}
+
 from bot import __version__, config
 from bot.core import runtime
 from bot.core.queue import ChatState, Track
