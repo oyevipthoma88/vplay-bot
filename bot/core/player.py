@@ -100,72 +100,48 @@ def _lock(chat_id: int) -> asyncio.Lock:
 
 
 def _video_quality():
-    """720p @ 30fps by default (Telegram hard-caps group calls at 720p/30).
-
-    VideoParameters is used when the installed py-tgcalls exports it;
-    otherwise the VideoQuality enum is used (always available).
-    """
+    """720p @ 30fps — Telegram's hard max. adjust_by_height=False keeps
+    width as reference (critical for 16:9 widescreen sources)."""
     key = (getattr(config, "DEFAULT_VIDEO_QUALITY", "hd_720p") or "hd_720p").lower()
     attr = _VIDEO_QUALITY.get(key, "HD_720p")
-
-    fps = int(getattr(config, "VIDEO_FPS", 30) or 30)
-    fps = min(max(fps, 15), 30)  # Telegram hard cap
-
+    fps = min(max(int(getattr(config, "VIDEO_FPS", 30) or 30), 15), 30)
     if VideoParameters is not None:
-        # Telegram downscales anything above 720p, so 1080p requests are
-        # sent as 1280x720@30 (cheaper decode, no server-side re-encode).
         try:
             if attr in ("HD_720p", "HD_1080p"):
-                return VideoParameters(width=1280, height=720, frame_rate=fps)
+                return VideoParameters(
+                    width=1280, height=720, frame_rate=fps,
+                    adjust_by_height=False,  # width is the reference
+                )
             if attr == "SD_480p":
-                return VideoParameters(width=854, height=480, frame_rate=fps)
-        except (TypeError, ValueError):
-            pass
-
+                return VideoParameters(
+                    width=854, height=480, frame_rate=fps,
+                    adjust_by_height=False,
+                )
+        except (TypeError, ValueError) as e:
+            logger.warning("VideoParameters rejected (%s) — enum fallback", e)
     return getattr(VideoQuality, attr, VideoQuality.HD_720p)
-
-
-
 def _audio_quality():
-    """48 kHz audio. AudioQuality.HIGH is already 48kHz, so the enum is a
-    safe fallback when AudioParameters is not exported by this build.
-    """
+    """48 kHz stereo. channels=2 is critical — default is mono."""
     lvl = (getattr(config, "DEFAULT_AUDIO_QUALITY", "high") or "high").lower()
     if lvl == "low":
         return AudioQuality.LOW
     if lvl == "medium":
         return AudioQuality.MEDIUM
-
     if AudioParameters is not None:
-        ch = int(getattr(config, "AUDIO_CHANNELS", 2) or 2)
-        ch = 1 if ch < 2 else 2
         try:
-            return AudioParameters(bitrate=48000, channels=ch)
-        except (TypeError, ValueError):
-            pass
-
+            return AudioParameters(bitrate=48000, channels=2)
+        except (TypeError, ValueError) as e:
+            logger.warning("AudioParameters rejected (%s) — enum fallback", e)
     return AudioQuality.HIGH
-
-
-
 def _ffmpeg_params(offset: int = 0) -> str:
-    """FFmpeg section format with low-latency + realtime flags.
+    """Low-latency FFmpeg flags ONLY. Scaling is handled by VideoParameters.
 
-    ROOT FIX for mid-stream quality drops:
-      -re                Read input at native frame rate (prevents CPU spikes
-                         and buffer buildup that cause later underruns)
-      -fflags nobuffer   Disable input buffering (low latency)
-      -flags low_delay   Low-delay decoder mode
-      -max_delay 0       No packet reorder delay
-      -thread_queue_size 512  Larger packet queue to avoid blocking
-
-    Scaling: 1280x720@30 explicit (Telegram hard-caps at 720p/30)
-    Audio:   128k bitrate, stereo 48kHz via AudioParameters
+    DO NOT add -vf or -r here — PyTgCalls builds its own scaling command from
+    VideoParameters. Adding -vf here causes DOUBLE SCALING (quality loss + CPU
+    waste) and conflicts with NTgCalls internal pipeline.
     """
     threads = int(getattr(config, "FFMPEG_THREADS", 1) or 1)
-    fps = min(max(int(getattr(config, "VIDEO_FPS", 30) or 30), 15), 30)
     parts = [
-        # --- base: before -i ---
         "-b:start",
         "-re",
         "-fflags", "nobuffer",
@@ -179,10 +155,6 @@ def _ffmpeg_params(offset: int = 0) -> str:
     if offset > 0:
         parts += ["-ss", str(int(offset))]
     parts.append("-b:end")
-    # --- after -i ---
-    parts += ["-vf:video:mid", "scale=1280:720:force_original_aspect_ratio=decrease"]
-    parts += ["-r:video:mid", str(fps)]
-    parts += ["-ab:audio:mid", "128k"]
     return " ".join(parts)
 
 
