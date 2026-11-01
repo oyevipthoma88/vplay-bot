@@ -134,7 +134,10 @@ async def vplay_cmd(client, message: Message):
 @admin_only
 async def vpause_cmd(client, message: Message):
     await player_core.pause(message.chat.id)
-    await message.reply_text("⏸ <b>Paused.</b> /vresume se dobara chalayein.")
+    await _post_card(
+        message.chat.id,
+        ui.now_playing_card(get_state(message.chat.id), "⏸ <b>Paused</b>"),
+    )
 
 
 @bot.on_message(cmd("vresume") & _GROUP)
@@ -142,7 +145,10 @@ async def vpause_cmd(client, message: Message):
 @admin_only
 async def vresume_cmd(client, message: Message):
     await player_core.resume(message.chat.id)
-    await message.reply_text("▶️ <b>Resumed.</b>")
+    await _post_card(
+        message.chat.id,
+        ui.now_playing_card(get_state(message.chat.id), "▶️ <b>Resumed</b>"),
+    )
 
 
 @bot.on_message(cmd("vskip") & _GROUP)
@@ -181,7 +187,13 @@ async def vseek_cmd(client, message: Message):
         return
     seconds = parse_time_to_seconds(parts[1].split()[0])
     used = await player_core.seek(message.chat.id, seconds)
-    await message.reply_text(f"⏩ Ab <b>{format_duration(used)}</b> se chal raha hai.")
+    await _post_card(
+        message.chat.id,
+        ui.now_playing_card(
+            get_state(message.chat.id),
+            f"⏩ <b>Seeked to {format_duration(used)}</b>",
+        ),
+    )
 
 
 @bot.on_message(cmd("vloop") & _GROUP)
@@ -189,7 +201,13 @@ async def vseek_cmd(client, message: Message):
 @admin_only
 async def vloop_cmd(client, message: Message):
     on = player_core.toggle_loop(message.chat.id)
-    await message.reply_text("🔁 <b>Loop ON</b> — ye track repeat hoga." if on else "➡️ <b>Loop OFF</b>")
+    await _post_card(
+        message.chat.id,
+        ui.now_playing_card(
+            get_state(message.chat.id),
+            "🔁 <b>Loop ON</b>" if on else "➡️ <b>Loop OFF</b>",
+        ),
+    )
 
 
 @bot.on_message(cmd("vshuffle") & _GROUP)
@@ -197,7 +215,10 @@ async def vloop_cmd(client, message: Message):
 @admin_only
 async def vshuffle_cmd(client, message: Message):
     n = player_core.shuffle(message.chat.id)
-    await message.reply_text(f"🔀 <b>{n} tracks shuffle ho gaye.</b>")
+    await _post_card(
+        message.chat.id,
+        ui.now_playing_card(get_state(message.chat.id), f"🔀 <b>{n} tracks shuffled</b>"),
+    )
 
 
 @bot.on_message(cmd(["vqueue", "vplaylist"]) & _GROUP)
@@ -207,7 +228,7 @@ async def vqueue_cmd(client, message: Message):
     if state.current is None:
         await message.reply_text("Abhi kuch play nahi ho raha.")
         return
-    await message.reply_text(ui.queue_text(state))
+    await _post_card(message.chat.id, ui.queue_text(state))
 
 
 @bot.on_message(cmd(["vnowplaying", "vnp", "vcurrent"]) & _GROUP)
@@ -224,7 +245,10 @@ async def vnowplaying_cmd(client, message: Message):
 @admin_only
 async def vmute_cmd(client, message: Message):
     await player_core.mute(message.chat.id)
-    await message.reply_text("🔇 <b>Muted.</b>")
+    await _post_card(
+        message.chat.id,
+        ui.now_playing_card(get_state(message.chat.id), "🔇 <b>Muted</b>"),
+    )
 
 
 @bot.on_message(cmd("vunmute") & _GROUP)
@@ -232,7 +256,10 @@ async def vmute_cmd(client, message: Message):
 @admin_only
 async def vunmute_cmd(client, message: Message):
     await player_core.unmute(message.chat.id)
-    await message.reply_text("🔊 <b>Unmuted.</b>")
+    await _post_card(
+        message.chat.id,
+        ui.now_playing_card(get_state(message.chat.id), "🔊 <b>Unmuted</b>"),
+    )
 
 
 # --- Player card buttons -------------------------------------------------

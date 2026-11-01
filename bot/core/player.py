@@ -264,6 +264,11 @@ async def _start_stream(chat_id: int, track: Track, offset: int = 0) -> None:
         await ensure_group_call(chat_id)
 
     logger.info("Chat %s: stream start — %s (offset %s)", chat_id, track.title, offset)
+    # SEEK/SKIP FIX: PyTgCalls fires StreamEnded for the OLD stream when
+    # play() replaces it. _on_stream_end uses state.last_start as a guard
+    # to ignore this stale event — but seek()/skip() never updated it,
+    # so the guard never fired and the queue auto-advanced (=stream hat jati thi).
+    state.last_start = time.time()
     last_error: Optional[BaseException] = None
     for attempt in (1, 2):
         try:
@@ -542,6 +547,8 @@ async def seek(chat_id: int, seconds: int) -> int:
         # restarting ffmpeg at the offset — the streamer serves HTTP Range.
         if track.is_url:
             await _start_stream(chat_id, track, offset=seconds)
+            # SEEK FIX: elapsed() ko naya position dikhane ke liye
+            state.started_at = time.time() - seconds
         else:
             old_source = track.source
             seeked_path = await _cut_from(old_source, seconds)
