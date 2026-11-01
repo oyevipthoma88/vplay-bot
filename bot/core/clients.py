@@ -23,12 +23,19 @@ from bot import config
 
 os.makedirs(config.DOWNLOADS_DIR, exist_ok=True)
 
+# Pyrogram's default is 1 download at a time per client. The 0s streamer is
+# read by several ffprobe/ffmpeg processes AT THE SAME TIME (audio + video,
+# plus reconnects on seek), so with 1 slot the 2nd reader hung forever and
+# Telegram-file /vplay never started. Allow enough parallel transmissions.
+_TRANSMISSIONS = 8
+
 bot = Client(
     name="vplay-bot",
     api_id=config.API_ID,
     api_hash=config.API_HASH,
     bot_token=config.BOT_TOKEN,
     in_memory=True,
+    max_concurrent_transmissions=_TRANSMISSIONS,
 )
 
 assistant = Client(
@@ -37,6 +44,7 @@ assistant = Client(
     api_hash=config.API_HASH,
     session_string=config.SESSION_STRING,
     in_memory=True,
+    max_concurrent_transmissions=_TRANSMISSIONS,
 )
 
 # Belt and braces: if any library version resolves its loop lazily or

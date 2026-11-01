@@ -20,7 +20,7 @@ then run the app on that same loop (see `bot/__main__.py`).
 """
 import asyncio
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 try:
     LOOP = asyncio.get_event_loop_policy().get_event_loop()

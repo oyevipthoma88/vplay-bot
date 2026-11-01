@@ -8,6 +8,7 @@ import re
 
 from pyrogram.types import Message
 
+from bot.core import streamer
 from bot.core.queue import Track
 from bot.core.streamer import get_stream_url
 from bot.logger import logger
@@ -81,6 +82,10 @@ async def resolve_track(message: Message, requested_by: str, requested_by_id: in
     )
     is_video = kind in ("video", "animation", "video_note") or mime.startswith("video")
     duration = int(getattr(media, "duration", 0) or 0)
+
+    # Hand the replied message straight to the streamer: no extra API call
+    # per HTTP request, and the file's DC connection starts warming now.
+    streamer.remember(replied)
 
     size_mb = (getattr(media, "file_size", 0) or 0) / 1e6
     logger.info("0s stream: msg %s (%s, %.1f MB) — no download", replied.id, title, size_mb)
