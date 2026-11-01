@@ -149,14 +149,17 @@ def now_playing_card(state: ChatState, header: str = "🎬 <b>Ab chal raha hai</
         flags.append("🔇 Muted")
     if state.loop:
         flags.append("🔁 Loop")
+    _remaining = max(0, total - elapsed) if total else 0
     time_line = (
         f"<code>{format_duration(elapsed)} {progress_bar(elapsed, total)} "
         f"{format_duration(total) if total else 'LIVE'}</code>"
+        + (f"  <i>⏳ {format_duration(_remaining)} baki</i>" if total else "")
     )
+    _title = t.title if len(t.title) <= 60 else t.title[:57] + "…"
     lines = [
         header,
         "",
-        f"📌 <b>{html.escape(t.title)}</b>",
+        f"📌 <b>{html.escape(_title)}</b>",
         time_line,
         "",
         f"{'🎞' if t.is_video else '🎵'} <b>Type:</b> {'Video' if t.is_video else 'Audio'}"
@@ -165,9 +168,11 @@ def now_playing_card(state: ChatState, header: str = "🎬 <b>Ab chal raha hai</
         f"📊 <b>Status:</b> {status}" + (f"  ·  {'  ·  '.join(flags)}" if flags else ""),
     ]
     if state.queue:
-        lines.append(f"⏭ <b>Next:</b> {html.escape(state.queue[0].title)} "
-                     f"(+{len(state.queue) - 1} aur)" if len(state.queue) > 1
-                     else f"⏭ <b>Next:</b> {html.escape(state.queue[0].title)}")
+        _nxt = html.escape(state.queue[0].title)
+        if len(state.queue) > 1:
+            lines.append(f"⏭ <b>Next:</b> {_nxt} (+{len(state.queue) - 1} aur)")
+        else:
+            lines.append(f"⏭ <b>Next:</b> {_nxt}")
     return "\n".join(lines)
 
 

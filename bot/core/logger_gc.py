@@ -5,6 +5,14 @@ import logging
 from bot.core.clients import bot
 from bot.database import get_log_channel
 
+# Kurigram 2.2+ deprecated `disable_web_page_preview`; use `link_preview_options`.
+try:
+    from pyrogram.types import LinkPreviewOptions as _LPO
+    _NO_PREVIEW = {"link_preview_options": _LPO(is_disabled=True)}
+except ImportError:
+    _NO_PREVIEW = {"disable_web_page_preview": True}
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -13,7 +21,7 @@ async def send_log(text: str) -> None:
     if not channel_id:
         return
     try:
-        await bot.send_message(channel_id, text, disable_web_page_preview=True)
+        await bot.send_message(channel_id, text, **_NO_PREVIEW)
     except Exception as e:  # noqa: BLE001
         logger.warning("Log channel %s me message nahi gaya: %s", channel_id, e)
 

@@ -1,4 +1,5 @@
 import functools
+import time
 import traceback
 
 from pyrogram import Client
@@ -30,7 +31,17 @@ def _friendly(e: Exception) -> str:
         return "⚠️ Assistant group me nahi hai. Bot ko 'Invite users via link' permission dein."
     if "peer_id_invalid" in low:
         return "⚠️ Group resolve nahi hua. Ek baar /vdebug bhejein, phir dobara try karein."
-    return f"⚠️ {msg}"
+    if ("over your space quota" in low or "writes are blocked" in low
+            or "atlaserror" in low):
+        return ("⚠️ Database (MongoDB Atlas) quota full hai — bot chalega par stats "
+                "save nahi honge. Admin storage free karein.")
+    if "processlookuperror" in low or "jsondecodeerror" in low:
+        return "⚠️ Media file read nahi ho payi. Link/file check karein ya dobara try karein."
+    if "ffmpeg" in low or "ffprobe" in low or "filenotfound" in low:
+        return "⚠️ Server par ffmpeg/ffprobe missing ya file read fail. Admin ko batayein."
+    if "timeout" in low or "timed out" in low:
+        return "⚠️ Request timeout ho gaya. Thodi der baad dobara try karein."
+    return f"⚠️ {msg[:300]}"
 
 
 def error_guard(func):
@@ -40,6 +51,7 @@ def error_guard(func):
 
     @functools.wraps(func)
     async def wrapper(client: Client, message: Message, *args, **kwargs):
+        _t = time.time()
         try:
             from bot.utils.commands import mark_seen
 
@@ -68,6 +80,16 @@ def error_guard(func):
             except Exception:  # noqa: BLE001
                 pass
             await _try_reply(message, f"⚠️ Kuch error aa gaya: {e}")
+        finally:
+            try:
+                logger.info(
+                    "handler[%s] chat=%s ms=%.0f",
+                    func.__name__,
+                    getattr(message.chat, "id", "?"),
+                    (time.time() - _t) * 1000,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     return wrapper
 
