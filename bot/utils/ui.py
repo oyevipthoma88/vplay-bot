@@ -14,6 +14,9 @@ try:
 except ImportError:  # pragma: no cover - very old pyrogram
     NO_PREVIEW = {"disable_web_page_preview": True}
 
+
+HTML = {"parse_mode": "html"}
+
 from bot import __version__, config
 from bot.core import runtime
 from bot.core.queue import ChatState, Track
@@ -33,8 +36,24 @@ except ImportError:
         _HAS_BUTTON_STYLE = False
 
 
+def _normalize_url(url: str) -> str:
+    """@name / name / full URL -> valid t.me URL. Invalid -> owner DM fallback."""
+    if not url:
+        return f"tg://user?id={config.OWNER_ID}"
+    u = str(url).strip()
+    if u.startswith(("http://", "https://")):
+        return u
+    if u.startswith("tg://"):
+        return u
+    u = u.lstrip("@")
+    if u:
+        return f"https://t.me/{u}"
+    return f"tg://user?id={config.OWNER_ID}"
+
+
 def _url_btn(text, url, style=None):
     """InlineKeyboardButton with URL + optional color."""
+    url = _normalize_url(url)
     if style is not None and _HAS_BUTTON_STYLE:
         try:
             return Btn(text, url=url, style=style)
@@ -127,7 +146,7 @@ def start_text(first_name: str, stats: dict = None) -> str:
 
 
 
-def start_markup(include_owner: bool = True) -> Markup:
+def start_markup(include_owner: bool = True, is_owner: bool = False) -> Markup:
     P = _style("primary")
     G = _style("success")
     rows = []
@@ -142,22 +161,22 @@ def start_markup(include_owner: bool = True) -> Markup:
         _btn("📖 Commands", "ui_help_main", style=P),
         _btn("🎛 Features", "ui_features", style=P),
     ])
-    _update = getattr(config, "UPDATE_URL", None)
-    _support = getattr(config, "SUPPORT_URL", None)
+    _update = getattr(config, "UPDATE_URL", None) or getattr(config, "UPDATE_CHANNEL", None)
+    _support = getattr(config, "SUPPORT_URL", None) or getattr(config, "SUPPORT_GROUP", None)
     _row = []
     if _update:
         _row.append(_url_btn("📢 Updates", _update, style=P))
     if _support:
         _row.append(_url_btn("💬 Support", _support, style=P))
-    else:
-        # No support group configured -> in-bot help (never owner profile)
+    if not _row:
         _row.append(_btn("💬 Help", "ui_help_main", style=P))
-    if _row:
-        rows.append(_row)
-    if include_owner:
-        _owner_url = getattr(config, "OWNER_URL", None)
-        if _owner_url:
-            rows.append([_url_btn("👤 Owner", _owner_url, style=P)])
+    rows.append(_row)
+    if is_owner:
+        rows.append([_btn("👑 Owner Panel", "ui_owner", style=P)])
+    elif include_owner:
+        _owner = getattr(config, "OWNER_URL", None) or getattr(config, "OWNER_USERNAME", None)
+        if _owner:
+            rows.append([_url_btn("👤 Owner", _owner, style=P)])
     return Markup(rows)
 
 
@@ -264,9 +283,8 @@ def now_playing_card(state: ChatState, header: str = "🎬 <b>Ab chal raha hai</
     t: Track = state.current
     elapsed = state.elapsed()
     total = t.duration
-    status = "⏸ Paused" if state.is_paused else "▶️ Playing"
-
-    _title = _smart_truncate(t.title, 55)
+    status = "⏸ <b>Paused</b>" if state.is_paused else "▶️ <b>Playing</b>"
+    _title = _smart_truncate(t.title, 52)
     _remaining = max(0, total - elapsed) if total else 0
     _percent = f" <b>{int((elapsed / total) * 100)}%</b>" if total else ""
     time_line = (
@@ -274,13 +292,10 @@ def now_playing_card(state: ChatState, header: str = "🎬 <b>Ab chal raha hai</
         f"{format_duration(total) if total else 'LIVE'}</code>{_percent}"
         + (f"  <i>⏳ {format_duration(_remaining)} baki</i>" if total else "")
     )
-
     _mode_e = _MODE_EMOJI.get(t.mode, "📌")
     _pos = f"  ·  <b>1/{1 + len(state.queue)}</b>" if state.queue else ""
-
     _lm = getattr(state, "loop_mode", "off")
     _vol = getattr(state, "volume", 100)
-
     _flags = [status]
     if state.is_muted:
         _flags.append("🔇 Muted")
@@ -290,7 +305,6 @@ def now_playing_card(state: ChatState, header: str = "🎬 <b>Ab chal raha hai</
         _flags.append("🔁 Queue")
     if _vol != 100:
         _flags.append(f"🔊 {_vol}%")
-
     lines = [
         header,
         "━━━━━━━━━━━━━━━━━━━━",
@@ -299,7 +313,7 @@ def now_playing_card(state: ChatState, header: str = "🎬 <b>Ab chal raha hai</
         "",
         f"{'🎞' if t.is_video else '🎵'} <b>{'Video' if t.is_video else 'Audio'}</b>"
         f"  ·  {_MODE_LABEL.get(t.mode, t.mode)}",
-        f"👤 <b>Requested by:</b> {html.escape(t.requested_by)}",
+        f"👤 <b>By:</b> {html.escape(t.requested_by)}",
         f"📊 <b>Status:</b> {'  ·  '.join(_flags)}",
     ]
     if state.queue:
@@ -310,41 +324,39 @@ def now_playing_card(state: ChatState, header: str = "🎬 <b>Ab chal raha hai</
         lines.append(f"🔊 <code>{_volume_bar(_vol)}</code>")
     return "\n".join(lines)
 
+
+
 def player_markup(chat_id: int, state: ChatState = None) -> Markup:
     paused = bool(state and state.is_paused)
     muted = bool(state and state.is_muted)
     looping = bool(state and getattr(state, "loop_mode", "off") != "off")
-    _lm_label = {"off": "OFF", "track": "TRACK", "queue": "QUEUE"}.get(
+    _lm = {"off": "OFF", "track": "TRACK", "queue": "QUEUE"}.get(
         getattr(state, "loop_mode", "off") if state else "off", "OFF"
     )
     c = chat_id
-
-    S_PRIMARY = _style("primary")
-    S_SUCCESS = _style("success")
-    S_DANGER = _style("danger")
-
+    P = _style("primary")
+    S = _style("success")
+    D = _style("danger")
     return Markup([
         [
-            _btn("⏪ 10s", f"cb_back_{c}", style=S_PRIMARY),
+            _btn("⏪ 10s", f"cb_back_{c}", style=P),
             _btn("▶️ Resume" if paused else "⏸ Pause",
-                 f"cb_{'resume' if paused else 'pause'}_{c}",
-                 style=S_PRIMARY),
-            _btn("⏩ 10s", f"cb_fwd_{c}", style=S_PRIMARY),
+                 f"cb_{'resume' if paused else 'pause'}_{c}", style=P),
+            _btn("⏩ 10s", f"cb_fwd_{c}", style=P),
         ],
         [
-            _btn("⏭ Skip", f"cb_skip_{c}", style=S_PRIMARY),
-            _btn("⏹ Stop", f"cb_stop_{c}", style=S_DANGER),
-            _btn(f"🔁 Loop: {_lm_label}", f"cb_loop_{c}",
-                 style=S_SUCCESS if looping else S_PRIMARY),
+            _btn("⏭ Skip", f"cb_skip_{c}", style=P),
+            _btn("⏹ Stop", f"cb_stop_{c}", style=D),
+            _btn(f"🔁 {_lm}", f"cb_loop_{c}", style=S if looping else P),
         ],
         [
             _btn("🔊 Unmute" if muted else "🔇 Mute",
                  f"cb_{'unmute' if muted else 'mute'}_{c}",
-                 style=S_DANGER if muted else S_PRIMARY),
-            _btn("📜 Queue", f"cb_queue_{c}", style=S_PRIMARY),
-            _btn("🔄 Refresh", f"cb_refresh_{c}", style=S_PRIMARY),
+                 style=D if muted else P),
+            _btn("📜 Queue", f"cb_queue_{c}", style=P),
+            _btn("🔄 Refresh", f"cb_refresh_{c}", style=P),
         ],
-        [_btn("❌ Close card", f"cb_close_{c}", style=S_DANGER)],
+        [_btn("❌ Close", f"cb_close_{c}", style=D)],
     ])
 
 

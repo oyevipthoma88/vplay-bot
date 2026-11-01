@@ -24,6 +24,7 @@ async def start_cmd(client, message: Message):
         if message.from_user:
             await add_served_user(message.from_user.id, message.from_user.first_name or "")
         name = message.from_user.first_name if message.from_user else ""
+        _is_owner = bool(message.from_user and message.from_user.id == config.OWNER_ID)
         # Deep-link: /start features
         _parts = (message.text or "").split(maxsplit=1)
         _payload = _parts[1].strip().lower() if len(_parts) > 1 else ""
@@ -56,53 +57,57 @@ async def start_cmd(client, message: Message):
                 await message.reply_text(_text, reply_markup=ui.start_markup(False),
                                          **ui.NO_PREVIEW)
     else:
-        await message.reply_text(ui.group_start_text(), reply_markup=ui.help_markup("main", False))
+        await message.reply_text(ui.group_start_text(), reply_markup=ui.help_markup("main", False), **ui.HTML)
 
 
 @bot.on_message(cmd("help"))
 @error_guard
 async def help_cmd(client, message: Message):
     private = message.chat.type == ChatType.PRIVATE
-    await message.reply_text(ui.help_text("main"), reply_markup=ui.help_markup("main", private))
+    await message.reply_text(ui.help_text("main"), reply_markup=ui.help_markup("main", private), **ui.HTML)
 
 
-@bot.on_callback_query(filters.regex(r"^ui_(start|close|help_\w+|features)$"))
+@bot.on_callback_query(filters.regex(r"^ui_(start|close|help_\w+|features|owner)$"))
 async def ui_buttons(client, query: CallbackQuery):
     data = query.data[3:]
+
+    async def _safe_edit(text, markup):
+        try:
+            if getattr(query.message, "photo", None):
+                await query.message.edit_caption(caption=text, reply_markup=markup, parse_mode="html")
+            else:
+                await query.message.edit_text(text, reply_markup=markup, parse_mode="html")
+        except MessageNotModified:
+            pass
+        except Exception:
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            await bot.send_message(query.message.chat.id, text, reply_markup=markup, **ui.HTML, **ui.NO_PREVIEW)
+
     try:
         if data == "close":
             await query.message.delete()
+        elif data == "owner":
+            if query.from_user.id != config.OWNER_ID:
+                await query.answer("🔒 Owner only", show_alert=True)
+                return
+            await _safe_edit(ui.owner_panel_text(), ui.owner_panel_markup())
         elif data == "start":
-            try:
-                await query.message.edit_text(
-                    ui.start_text(query.from_user.first_name),
-                    reply_markup=ui.start_markup(),
-                    **ui.NO_PREVIEW,
-                )
-            except MessageNotModified:
-                raise
-            except Exception as e:  # noqa: BLE001
-                if not ui.is_owner_button_error(e):
-                    raise
-                await query.message.edit_text(
-                    ui.start_text(query.from_user.first_name, stats=_stats),
-                    reply_markup=ui.start_markup(False),
-                    **ui.NO_PREVIEW,
-                )
+            _is_owner = query.from_user.id == config.OWNER_ID
+            await _safe_edit(ui.start_text(query.from_user.first_name),
+                             ui.start_markup(is_owner=_is_owner))
         elif data == "features":
-            await query.message.edit_text(
-                ui.features_text(),
-                reply_markup=ui.features_markup(),
-                **ui.NO_PREVIEW,
-            )
+            await _safe_edit(ui.features_text(), ui.features_markup())
         else:
             page = data[len("help_"):]
             private = query.message.chat.type == ChatType.PRIVATE
-            await query.message.edit_text(ui.help_text(page), reply_markup=ui.help_markup(page, private))
+            await _safe_edit(ui.help_text(page), ui.help_markup(page, private))
         await query.answer()
     except MessageNotModified:
         await query.answer()
-    except Exception:  # noqa: BLE001
+    except Exception:
         await query.answer("Ye message ab edit nahi ho sakta.", show_alert=True)
 
 
@@ -127,7 +132,7 @@ async def id_cmd(client, message: Message):
         _lines.append("👑 <b>You are the bot owner ✅</b>")
     elif message.chat.type == _CT.PRIVATE:
         _lines.append(f"👑 <b>Owner ID:</b> <code>{config.OWNER_ID}</code>")
-    await message.reply_text("\n".join(_lines))
+    await message.reply_text("\n".join(_lines), **ui.HTML)
 
 
 @bot.on_message(cmd("ping"))

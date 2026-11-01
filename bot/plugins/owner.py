@@ -64,7 +64,7 @@ async def owner_cmd(client, message: Message):
     await message.reply_text(
         ui.owner_panel_text(),
         reply_markup=ui.owner_panel_markup(),
-        **ui.NO_PREVIEW,
+        **ui.HTML, **ui.NO_PREVIEW,
     )
 
 

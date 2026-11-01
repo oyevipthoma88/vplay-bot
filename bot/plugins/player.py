@@ -32,10 +32,37 @@ _PRIVATE_HINT = (
 _last_card: dict = {}
 
 
+def _brand_thumb(path: str) -> str:
+    """Add VPlay branding (gradient + label) to a thumbnail. Returns path."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        return path
+    try:
+        img = Image.open(path).convert("RGBA")
+        w, h = img.size
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        for y in range(int(h * 0.62), h):
+            alpha = int(190 * (y - h * 0.62) / max(1, h * 0.38))
+            draw.line([(0, y), (w, y)], fill=(0, 0, 0, alpha))
+        try:
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", max(20, w // 16))
+        except Exception:
+            font = ImageFont.load_default()
+        draw.text((w // 28, h - int(h * 0.14)), "VPlay", fill=(255, 255, 255, 255), font=font)
+        out = img.convert("RGB")
+        out.paste(overlay, (0, 0), overlay)
+        out.save(path, "JPEG", quality=88)
+    except Exception:
+        return path
+    return path
+
+
 async def _send_photo_card(chat_id: int, thumb_id: str, text: str, markup) -> Message:
     """Send photo card. On THUMBNAIL->PHOTO mismatch, download and reupload."""
     try:
-        return await bot.send_photo(chat_id, thumb_id, caption=text, reply_markup=markup)
+        return await bot.send_photo(chat_id, thumb_id, caption=text, reply_markup=markup, parse_mode="html")
     except Exception as e:
         err = str(e).lower()
         if "expected photo" in err or "thumbnail" in err:
@@ -44,7 +71,8 @@ async def _send_photo_card(chat_id: int, thumb_id: str, text: str, markup) -> Me
             try:
                 path = await bot.download_media(thumb_id)
                 if path:
-                    return await bot.send_photo(chat_id, path, caption=text, reply_markup=markup)
+                    path = _brand_thumb(path)
+                    return await bot.send_photo(chat_id, path, caption=text, reply_markup=markup, parse_mode="html")
             except Exception as dl_err:
                 logger.warning("thumbnail download fail: %s", dl_err)
             finally:
@@ -77,7 +105,7 @@ async def _post_card(chat_id: int, text: str, edit_message: Message = None,
             _is_photo = bool(getattr(edit_message, "photo", None))
             if thumb:
                 if _is_photo:
-                    msg = await edit_message.edit_caption(caption=text, reply_markup=markup)
+                    msg = await edit_message.edit_caption(caption=text, reply_markup=markup, parse_mode="html")
                 else:
                     try:
                         await edit_message.delete()
@@ -90,9 +118,9 @@ async def _post_card(chat_id: int, text: str, edit_message: Message = None,
                         await edit_message.delete()
                     except Exception:  # noqa: BLE001
                         pass
-                    msg = await bot.send_message(chat_id, text, reply_markup=markup)
+                    msg = await bot.send_message(chat_id, text, reply_markup=markup, **ui.HTML, **ui.NO_PREVIEW)
                 else:
-                    msg = await edit_message.edit_text(text, reply_markup=markup)
+                    msg = await edit_message.edit_text(text, reply_markup=markup, **ui.HTML)
         except MessageNotModified:
             msg = edit_message
         except Exception as e:  # noqa: BLE001
@@ -104,9 +132,9 @@ async def _post_card(chat_id: int, text: str, edit_message: Message = None,
                 msg = await _send_photo_card(chat_id, thumb, text, markup)
             except Exception as e:  # noqa: BLE001
                 logger.warning("send_photo fail (%s) — fallback to text", e)
-                msg = await bot.send_message(chat_id, text, reply_markup=markup)
+                msg = await bot.send_message(chat_id, text, reply_markup=markup, **ui.HTML, **ui.NO_PREVIEW)
         else:
-            msg = await bot.send_message(chat_id, text, reply_markup=markup)
+            msg = await bot.send_message(chat_id, text, reply_markup=markup, **ui.HTML, **ui.NO_PREVIEW)
     if old and msg is not None and old != msg.id:
         try:
             await bot.delete_messages(chat_id, old)
@@ -129,9 +157,9 @@ async def _safe_edit(message: Message, text: str, markup=None) -> None:
     """Edit text OR caption based on message type. Never raises."""
     try:
         if getattr(message, "photo", None):
-            await message.edit_caption(caption=text, reply_markup=markup)
+            await message.edit_caption(caption=text, reply_markup=markup, parse_mode="html")
         else:
-            await message.edit_text(text, reply_markup=markup)
+            await message.edit_text(text, reply_markup=markup, **ui.HTML)
     except MessageNotModified:
         pass
     except Exception as e:  # noqa: BLE001
@@ -234,7 +262,7 @@ async def vplayforce_cmd(client, message: Message):
 
     track = await resolve_track(message, user_name, user_id, client)
 
-    status = await message.reply_text("⚡ **Force-play** — stream replace ho raha hai…")
+    status = await message.reply_text("⚡ <b>Force-play</b> — stream replace ho raha hai…", **ui.HTML)
     try:
         await player_core.ensure_assistant_in_chat(chat_id)
         # Force: clear queue + stop current, then play new
