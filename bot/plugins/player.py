@@ -346,11 +346,12 @@ async def seekback_cmd(client, message: Message):
 @admin_only
 async def vloop_cmd(client, message: Message):
     mode = player_core.cycle_loop_mode(message.chat.id)
+    _label = {"off": "OFF", "track": "TRACK", "queue": "QUEUE"}.get(mode, mode.upper())
     await _post_card(
         message.chat.id,
         ui.now_playing_card(
             get_state(message.chat.id),
-            "🔁 <b>Loop ON</b>" if on else "➡️ <b>Loop OFF</b>",
+            f"🔁 <b>Loop: {_label}</b>",
         ),
     )
 
