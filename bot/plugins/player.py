@@ -264,7 +264,7 @@ async def vunmute_cmd(client, message: Message):
 
 # --- Player card buttons -------------------------------------------------
 
-_ACTIONS = "pause|resume|skip|stop|mute|unmute|queue|close|back|fwd|loop|refresh"
+_ACTIONS = "back30|fwd30|pause|resume|skip|stop|mute|unmute|queue|close|back|fwd|loop|refresh"
 
 
 async def _refresh_card(query: CallbackQuery, chat_id: int) -> None:
@@ -328,11 +328,12 @@ async def player_buttons(client, query: CallbackQuery):
             await player_core.resume(chat_id)
             await _answer("▶️ Resumed")
             await _refresh_card(query, chat_id)
-        elif action in ("back", "fwd"):
+        elif action in ("back", "fwd", "back30", "fwd30"):
             await _answer("⏳ Seeking…")
-            pos = await player_core.seek_relative(chat_id, -10 if action == "back" else 10)
+            delta = {"back": -10, "fwd": 10, "back30": -30, "fwd30": 30}[action]
+            pos = await player_core.seek_relative(chat_id, delta)
             await _refresh_card(query, chat_id)
-            logger.info("Button seek chat %s -> %ss", chat_id, pos)
+            logger.info("Button seek %s chat %s -> %ss", action, chat_id, pos)
         elif action == "skip":
             await _answer("⏭ Skipping…")
             nxt = await player_core.skip(chat_id)

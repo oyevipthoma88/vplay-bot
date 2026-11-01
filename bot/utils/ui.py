@@ -19,6 +19,22 @@ from bot.core import runtime
 from bot.core.queue import ChatState, Track
 from bot.utils.formatting import format_duration, progress_bar
 
+
+def _smart_truncate(text: str, max_len: int = 60) -> str:
+    """Word-boundary pe truncate — word beech me na kate."""
+    text = (text or "").strip()
+    if len(text) <= max_len:
+        return text
+    cut = text[:max_len - 1].rsplit(" ", 1)[0] or text[:max_len - 1]
+    return cut + "…"
+
+
+_MODE_EMOJI = {
+    "stream": "⚡",
+    "link": "🔗",
+    "file": "📁",
+}
+
 _MODE_LABEL = {
     "stream": "⚡ 0s Telegram stream",
     "link": "🔗 Direct link",
@@ -150,7 +166,7 @@ def now_playing_card(state: ChatState, header: str = "🎬 <b>Ab chal raha hai</
     if state.loop:
         flags.append("🔁 Loop")
 
-    _title = t.title if len(t.title) <= 60 else t.title[:57] + "…"
+    _title = _smart_truncate(t.title, 60)
     _remaining = max(0, total - elapsed) if total else 0
     _percent = f"  <b>{int((elapsed / total) * 100)}%</b>" if total else ""
     time_line = (
@@ -162,7 +178,7 @@ def now_playing_card(state: ChatState, header: str = "🎬 <b>Ab chal raha hai</
     lines = [
         header,
         "",
-        f"📌 <b>{html.escape(_title)}</b>",
+        f"{_MODE_EMOJI.get(t.mode, "📌")} <b>{html.escape(_title)}</b>",
         time_line,
         "",
         f"{'🎞' if t.is_video else '🎵'} <b>Type:</b> {'Video' if t.is_video else 'Audio'}"
@@ -185,31 +201,35 @@ def player_markup(chat_id: int, state: ChatState = None) -> Markup:
     c = chat_id
     return Markup([
         [
+            Btn("⏪ 30s", callback_data=f"cb_back30_{c}"),
             Btn("⏪ 10s", callback_data=f"cb_back_{c}"),
             Btn("▶️ Resume" if paused else "⏸ Pause",
                 callback_data=f"cb_{'resume' if paused else 'pause'}_{c}"),
             Btn("⏩ 10s", callback_data=f"cb_fwd_{c}"),
+            Btn("⏩ 30s", callback_data=f"cb_fwd30_{c}"),
         ],
         [
             Btn("⏭ Skip", callback_data=f"cb_skip_{c}"),
             Btn("⏹ Stop", callback_data=f"cb_stop_{c}"),
-            Btn("🔁 Loop ✓" if looping else "🔁 Loop", callback_data=f"cb_loop_{c}"),
+            Btn("🔁 Loop ON" if looping else "🔁 Loop OFF", callback_data=f"cb_loop_{c}"),
         ],
         [
             Btn("🔊 Unmute" if muted else "🔇 Mute",
                 callback_data=f"cb_{'unmute' if muted else 'mute'}_{c}"),
             Btn("📜 Queue", callback_data=f"cb_queue_{c}"),
-            Btn("🔄", callback_data=f"cb_refresh_{c}"),
+            Btn("🔄 Refresh", callback_data=f"cb_refresh_{c}"),
         ],
-        [Btn("❌ Close", callback_data=f"cb_close_{c}")],
+        [Btn("❌ Close card", callback_data=f"cb_close_{c}")],
     ])
 
 
 def queued_card(track: Track, position: int) -> str:
     dur = f" · ⏱ {format_duration(track.duration)}" if track.duration else ""
+    mode_e = _MODE_EMOJI.get(track.mode, "📌")
+    _title = _smart_truncate(track.title, 55)
     return (
         f"➕ <b>Queue me add — #{position}</b>\n\n"
-        f"📌 <b>{html.escape(track.title)}</b>{dur}\n"
+        f"{mode_e} <b>{html.escape(_title)}</b>{dur}\n"
         f"👤 <b>By:</b> {html.escape(track.requested_by)}"
     )
 
@@ -218,7 +238,7 @@ def queue_text(state: ChatState) -> str:
     t = state.current
     lines = [
         "📜 <b>Queue</b>\n",
-        f"▶️ <b>Now:</b> {html.escape(t.title)}"
+        f"▶️ <b>Now:</b> {html.escape(_smart_truncate(t.title, 55))}"
         + (f"  <code>{format_duration(state.elapsed())}/{format_duration(t.duration)}</code>"
            if t.duration else ""),
         "",
@@ -227,7 +247,9 @@ def queue_text(state: ChatState) -> str:
     for i, q in enumerate(state.queue[:20], start=1):
         total += q.duration or 0
         dur = f" · {format_duration(q.duration)}" if q.duration else ""
-        lines.append(f"<b>{i}.</b> {html.escape(q.title)}{dur} — <i>{html.escape(q.requested_by)}</i>")
+        mode_e = _MODE_EMOJI.get(q.mode, "📌")
+        qt = _smart_truncate(q.title, 45)
+        lines.append(f"<b>{i}.</b> {mode_e} {html.escape(qt)}{dur} — <i>{html.escape(q.requested_by)}</i>")
     if len(state.queue) > 20:
         lines.append(f"…aur {len(state.queue) - 20} tracks")
     if not state.queue:
