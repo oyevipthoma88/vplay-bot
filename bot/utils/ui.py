@@ -397,3 +397,46 @@ def queue_text(state: ChatState) -> str:
         lines.append(f"🔁 <b>Loop:</b> {_lm.upper()}")
     return "\n".join(lines)
 
+
+# --- Owner panel --------------------------------------------------------
+
+
+def owner_panel_text() -> str:
+    from bot.database.owner_data import get_start_pic, is_maintenance
+    _maint = "🟢 ON" if is_maintenance() else "⚪ OFF"
+    _pic = "✅ Set" if get_start_pic() else "❌ Not set"
+    _uname = runtime.BOT_USERNAME or "unknown"
+    return (
+        "👑 <b>Owner Panel</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 Bot: @{_uname}\n"
+        f"⚙️ Maintenance: {_maint}\n"
+        f"🖼 Start Pic: {_pic}\n"
+        "\n<i>Action chunein:</i>"
+    )
+
+
+def owner_panel_markup() -> Markup:
+    from bot.database.owner_data import get_start_pic, is_maintenance
+    _pic_set = bool(get_start_pic())
+    _maint = is_maintenance()
+    return Markup([
+        [
+            _btn("📊 Stats", "own_stats", style=_style("primary")),
+            _btn("📢 Broadcast", "own_broadcast", style=_style("primary")),
+        ],
+        [
+            _btn("🖼 Set Start Pic", "own_start_pic", style=_style("primary")),
+            _btn("🗑 Clear Pic", "own_start_pic_clear") if _pic_set else
+            _btn("⚙️ Maintenance", "own_maintenance", style=_style("danger") if _maint else None),
+        ],
+        [
+            _btn("📝 Log Group", "own_log_group"),
+            _btn("⚙️ Maintenance", "own_maintenance", style=_style("danger") if _maint else None),
+        ],
+        [
+            _btn("🔄 Restart", "own_restart"),
+            _btn("❌ Close", "own_close", style=_style("danger")),
+        ],
+    ])
+
