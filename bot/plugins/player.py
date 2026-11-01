@@ -94,6 +94,19 @@ async def _drop_card(chat_id: int) -> None:
             pass
 
 
+async def _safe_edit(message: Message, text: str, markup=None) -> None:
+    """Edit text OR caption based on message type. Never raises."""
+    try:
+        if getattr(message, "photo", None):
+            await message.edit_caption(caption=text, reply_markup=markup)
+        else:
+            await message.edit_text(text, reply_markup=markup)
+    except MessageNotModified:
+        pass
+    except Exception as e:  # noqa: BLE001
+        logger.info("_safe_edit fail: %s", e)
+
+
 async def _on_track_change(chat_id: int, track, reason: str = "ended") -> None:
     if track is None:
         await _drop_card(chat_id)
@@ -490,17 +503,34 @@ async def player_buttons(client, query: CallbackQuery):
                                  edit_message=query.message)
             else:
                 _last_card.pop(chat_id, None)
-                await query.message.edit_text("⏭ Queue khali hai — video chat se nikal gaya.")
+                await _safe_edit(
+                    query.message,
+                    "⏭ <b>Queue khali hai</b> — video chat se nikal gaya.\n\n"
+                    "<i>Naya track chalane ke liye</i> <code>/vplay</code> <i>bhejein.</i>",
+                )
         elif action == "stop":
             await _answer("⏹ Stopping…")
             await player_core.stop(chat_id)
             _last_card.pop(chat_id, None)
             who = query.from_user.first_name or "admin"
-            await query.message.edit_text(f"⏹ <b>Stopped</b> by {html.escape(who)} — video chat chhod di.")
-            await log_stop(query.message.chat.title or "Group", chat_id, who)
+            _stop_msg = (
+                f"⏹ <b>Playback stopped</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>Stopped by:</b> {html.escape(who)}\n"
+                f"📜 Queue clear, video chat chhod diya gaya.\n\n"
+                f"<i>Naya track chalane ke liye</i> <code>/vplay</code> <i>bhejein.</i>"
+            )
+            await _safe_edit(query.message, _stop_msg)
+            try:
+                await log_stop(query.message.chat.title or "Group", chat_id, who)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("log_stop fail: %s", e)
         elif action == "loop":
             on = player_core.toggle_loop(chat_id)
-            await _answer("🔁 Loop ON" if on else "➡️ Loop OFF")
+            _st = get_state(chat_id)
+            _lm = getattr(_st, "loop_mode", "off")
+            _label = {"off": "OFF", "track": "TRACK", "queue": "QUEUE"}.get(_lm, _lm.upper())
+            await _answer(f"🔁 Loop: {_label}")
             await _refresh_card(query, chat_id)
         elif action == "mute":
             await player_core.mute(chat_id)
@@ -544,6 +574,7 @@ _register_private_hint(
         "vplay", "play", "vpause", "vresume", "vskip", "vstop", "vend",
         "vseek", "vqueue", "vplaylist", "vnowplaying", "vnp", "vcurrent",
         "vmute", "vunmute", "vloop", "vshuffle", "seek", "vcleanup", "vvolume",
+        "vplayforce", "playforce", "seekback", "vseekback",
     ]
 )
 
