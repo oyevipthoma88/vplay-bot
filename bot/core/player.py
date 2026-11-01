@@ -149,13 +149,14 @@ def _audio_quality():
 
 
 def _ffmpeg_params(offset: int = 0) -> str:
-    """Base FFmpeg options for smooth start + fast seek.
+    """FFmpeg section format with 720p scaling + 128k audio.
 
-    Documented section format: -b:start <before -i> -b:end
-    -probesize / -analyzeduration stop ffmpeg from scanning the whole big
-    MKV header first (that scan is the classic startup audio-stutter cause).
+    Telegram hard-caps group calls at 720p@30fps. Explicit scale avoids
+    server-side re-encode stutter; probesize/analyzeduration fix startup
+    audio stalls on big MKVs.
     """
     threads = int(getattr(config, "FFMPEG_THREADS", 2) or 2)
+    fps = min(max(int(getattr(config, "VIDEO_FPS", 30) or 30), 15), 30)
     parts = [
         "-b:start",
         "-probesize", "5000000",
@@ -165,6 +166,9 @@ def _ffmpeg_params(offset: int = 0) -> str:
     if offset > 0:
         parts += ["-ss", str(int(offset))]
     parts.append("-b:end")
+    parts += ["-vf:video:mid", "scale=1280:720:force_original_aspect_ratio=decrease"]
+    parts += ["-r:video:mid", str(fps)]
+    parts += ["-ab:audio:mid", "128k"]
     return " ".join(parts)
 
 
