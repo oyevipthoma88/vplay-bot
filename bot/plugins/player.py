@@ -373,78 +373,146 @@ def _register_private_hint(commands):
     return _hint
 
 
-@bot.on_message(cmd(["vplay", "play"]) & _GROUP)
-@error_guard
-@admin_only
-async def vplay_cmd(client, message: Message):
-    chat_id = message.chat.id
-    user_name = message.from_user.first_name if message.from_user else (
-        getattr(message.sender_chat, "title", None) or "Admin")
-    user_id = message.from_user.id if message.from_user else 0
+# Pending "kaunsa play karein?" choices: token -> {chat, items, ts, force}
+_pending_picks: dict = {}
+_PICK_TTL = 10 * 60
 
-    # Name search may take a few seconds — show progress, not silence.
-    _search_status = None
+
+def _new_pick(chat_id: int, items: list, force: bool) -> str:
+    import secrets
+    import time as _t
+    now = _t.time()
+    for k in [k for k, v in _pending_picks.items() if now - v["ts"] > _PICK_TTL]:
+        _pending_picks.pop(k, None)
+    token = secrets.token_hex(4)
+    _pending_picks[token] = {"chat": chat_id, "items": items, "ts": now, "force": force}
+    return token
+
+
+async def _maybe_show_choices(message: Message, force: bool) -> bool:
+    """For /vplay <name>: search and, if more than one file matches, post a
+    button list. Returns True when the request was handled here."""
+    from bot.core import movie_search
+    from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    if not movie_search.looks_like_name_query(message):
+        return False
+    query = movie_search.query_from_text(message)
+    if not query:
+        return False
+
+    status = await message.reply_text("🔍 <b>Movie search ho rahi hai…</b>", **ui.HTML)
     try:
-        from bot.core.movie_search import looks_like_name_query as _is_name_q
+        results = await movie_search.search_many(query)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("search_many fail: %s", e)
+        results = []
 
-        if _is_name_q(message):
-            _search_status = await message.reply_text(
-                "🔍 <b>Movie search ho rahi hai…</b>", **ui.HTML
-            )
-    except Exception:  # noqa: BLE001
-        _search_status = None
+    if not results:
+        await status.edit_text(movie_search.not_found_text(query), **ui.HTML)
+        return True
 
-    try:
-        track = await resolve_track(message, user_name, user_id, client)  # validate before any UI
-    except Exception:
-        if _search_status is not None:
-            try:
-                await _search_status.delete()
-            except Exception:  # noqa: BLE001
-                pass
-        raise
-
-    if _search_status is not None:
-        try:
-            await _search_status.delete()
-        except Exception:  # noqa: BLE001
-            pass
-
-    # Duplicate detection — same title already playing or queued
-    _state = get_state(chat_id)
-    if _state.current and _state.current.title == track.title:
-        await message.reply_text(
-            "⚠️ <b>Ye track pehle se chal raha hai.</b>\n"
-            "Seek: <code>/vseek 90</code>  ·  Skip: <code>/vskip</code>"
-        )
-        return
-    for _i, _q in enumerate(_state.queue, 1):
-        if _q.title == track.title:
-            await message.reply_text(
-                f"⚠️ <b>Ye track pehle se queue me hai</b> (position #{_i}).\n"
-                "Dekhne ke liye: <code>/vqueue</code>"
-            )
-            return
-
-    # One status message only — every extra edit is a Telegram round-trip
-    # that delayed the actual start.
-    status = await message.reply_text("⚡ <b>Stream start ho raha hai…</b>")
-    try:
-        await player_core.ensure_assistant_in_chat(chat_id)
-        started = await player_core.play_or_queue(chat_id, track)
-    except Exception:
+    items = []
+    for m in results:
+        items.append((m.chat.id, m.id, movie_search.result_label(m)))
+    if len(items) == 1:
         try:
             await status.delete()
         except Exception:  # noqa: BLE001
             pass
-        raise
+        await _play_from_pick(message.chat.id, items[0], message.from_user, force, reply_to=message)
+        return True
+
+    token = _new_pick(message.chat.id, items, force)
+    rows = [[InlineKeyboardButton(f"{i}. {lbl}", callback_data=f"vpick|{token}|{i - 1}")]
+            for i, (_, _, lbl) in enumerate(items, 1)]
+    rows.append([InlineKeyboardButton("❌ Cancel", callback_data=f"vpick|{token}|x")])
+    await status.edit_text(
+        f"🎬 <b>{len(items)} results mile</b> — <code>{html.escape(query[:60])}</code>\n"
+        "Kaunsa play karna hai? Neeche button dabayein 👇",
+        reply_markup=InlineKeyboardMarkup(rows), **ui.HTML,
+    )
+    return True
+
+
+async def _play_from_pick(chat_id: int, item, user, force: bool, reply_to: Message = None,
+                          status: Message = None) -> None:
+    from bot.core import movie_search
+
+    src_chat, src_id, _ = item
+    msg = None
+    for cli in (assistant, bot):
+        try:
+            m = await cli.get_messages(src_chat, src_id)
+            if m and not getattr(m, "empty", False):
+                msg = m
+                break
+        except Exception as e:  # noqa: BLE001
+            logger.info("pick get_messages via %s: %s", cli.name, e)
+    if msg is None:
+        text = "⚠️ Ye file ab available nahi hai. Dobara search karein."
+        if status is not None:
+            await status.edit_text(text)
+        elif reply_to is not None:
+            await reply_to.reply_text(text)
+        return
+    user_name = getattr(user, "first_name", None) or "User"
+    user_id = getattr(user, "id", 0) or 0
+    track = movie_search.build_track(msg, user_name, user_id, "channel")
+    await _start_track(chat_id, track, user_name, user_id, force, reply_to=reply_to, status=status)
+
+
+async def _start_track(chat_id: int, track, user_name: str, user_id: int, force: bool,
+                       reply_to: Message = None, status: Message = None) -> None:
+    _state = get_state(chat_id)
+    if not force:
+        dup = None
+        if _state.current and _state.current.title == track.title:
+            dup = ("⚠️ <b>Ye track pehle se chal raha hai.</b>\n"
+                   "Seek: <code>/vseek 90</code>  ·  Skip: <code>/vskip</code>")
+        else:
+            for _i, _q in enumerate(_state.queue, 1):
+                if _q.title == track.title:
+                    dup = (f"⚠️ <b>Ye track pehle se queue me hai</b> (position #{_i}).\n"
+                           "Dekhne ke liye: <code>/vqueue</code>")
+                    break
+        if dup:
+            if status is not None:
+                await status.edit_text(dup, **ui.HTML)
+            else:
+                await reply_to.reply_text(dup, **ui.HTML)
+            return
+
+    text = ("⚡ <b>Force-play</b> — stream replace ho raha hai…" if force
+            else "⚡ <b>Stream start ho raha hai…</b>")
+    if status is not None:
+        await status.edit_text(text, **ui.HTML)
+    else:
+        status = await reply_to.reply_text(text, **ui.HTML)
+    try:
+        await player_core.ensure_assistant_in_chat(chat_id)
+        if force:
+            _state.queue.clear()
+            if _state.current is not None:
+                await player_core.stop(chat_id)
+        started = await player_core.play_or_queue(chat_id, track)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("start_track[%s] fail: %s", chat_id, e)
+        try:
+            await status.edit_text(f"⚠️ {html.escape(str(e))[:800]}", **ui.HTML)
+        except Exception:  # noqa: BLE001
+            pass
+        return
 
     try:
-        await add_served_chat(chat_id, message.chat.title or "")
+        chat = await bot.get_chat(chat_id)
+        title = getattr(chat, "title", "") or "Group"
+        await add_served_chat(chat_id, title)
         if user_id:
             await add_served_user(user_id, user_name)
         await increment_play_count()
-        await log_play(message.chat.title or "Group", chat_id, user_name, user_id, track.title, track.mode)
+        await log_play(title, chat_id, user_name, user_id, track.title,
+                       "force" if force else track.mode)
     except Exception as e:  # noqa: BLE001 - stats must never break playback
         logger.warning("Stats/log update fail: %s", e)
 
@@ -455,6 +523,46 @@ async def vplay_cmd(client, message: Message):
         await status.edit_text(ui.queued_card(track, len(get_state(chat_id).queue)))
 
 
+@bot.on_callback_query(filters.regex(r"^vpick\|([0-9a-f]+)\|(\d+|x)$"))
+async def vpick_cb(client, query: CallbackQuery):
+    _, token, idx = query.data.split("|")
+    pick = _pending_picks.get(token)
+    if pick is None or query.message is None or query.message.chat.id != pick["chat"]:
+        await query.answer("⌛ Ye list expire ho gayi. /vplay dobara karein.", show_alert=True)
+        return
+    if idx == "x":
+        _pending_picks.pop(token, None)
+        await query.answer("Cancel")
+        try:
+            await query.message.delete()
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    i = int(idx)
+    if i >= len(pick["items"]):
+        await query.answer("Invalid choice", show_alert=True)
+        return
+    _pending_picks.pop(token, None)  # one tap only — no double play
+    await query.answer("▶️ Play ho raha hai…")
+    await _play_from_pick(pick["chat"], pick["items"][i], query.from_user, pick["force"],
+                          status=query.message)
+
+
+@bot.on_message(cmd(["vplay", "play"]) & _GROUP)
+@error_guard
+@admin_only
+async def vplay_cmd(client, message: Message):
+    chat_id = message.chat.id
+    user_name = message.from_user.first_name if message.from_user else (
+        getattr(message.sender_chat, "title", None) or "Admin")
+    user_id = message.from_user.id if message.from_user else 0
+
+    # /vplay <name> -> show all matches as buttons (user picks which one).
+    if await _maybe_show_choices(message, force=False):
+        return
+
+    track = await resolve_track(message, user_name, user_id, client)  # reply / link
+    await _start_track(chat_id, track, user_name, user_id, False, reply_to=message)
 
 
 @bot.on_message(cmd(["vplayforce", "playforce"]) & _GROUP)
@@ -466,6 +574,9 @@ async def vplayforce_cmd(client, message: Message):
     user_name = message.from_user.first_name if message.from_user else (
         getattr(message.sender_chat, "title", None) or "Admin")
     user_id = message.from_user.id if message.from_user else 0
+
+    if await _maybe_show_choices(message, force=True):
+        return
 
     track = await resolve_track(message, user_name, user_id, client)
 

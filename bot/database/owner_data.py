@@ -37,13 +37,16 @@ async def hydrate() -> None:
         from bot.database.mongo import get_setting
     except ImportError:
         return
-    for key in ("maintenance", "start_pic", "default_thumb", "movie_channel"):
+    for key in ("maintenance", "start_pic", "default_thumb", "movie_channel", "movie_channels"):
         try:
             val = await get_setting(key)
         except Exception as e:  # noqa: BLE001
             logger.warning("owner_data hydrate(%s) failed: %s", key, e)
             continue
         if val is None:
+            continue
+        if key == "movie_channels":
+            _state[key] = list(val) if isinstance(val, (list, tuple)) else []
             continue
         _state[key] = bool(val) if key == "maintenance" else val
     logger.info(
@@ -107,6 +110,7 @@ def add_movie_channel(chat_ref) -> list:
     _state["movie_channels"] = chs
     _state["movie_channel"] = chs[0] if chs else None
     _schedule("movie_channels", chs)
+    _schedule("movie_channel", _state["movie_channel"])
     return chs
 
 
@@ -116,6 +120,7 @@ def remove_movie_channel(chat_ref) -> list:
         _state["movie_channel"] = chs[0] if chs else None
     _state["movie_channels"] = chs
     _schedule("movie_channels", chs)
+    _schedule("movie_channel", _state["movie_channel"])
     return chs
 
 

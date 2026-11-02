@@ -44,7 +44,10 @@ SESSION_STRING = _get_env_str("SESSION_STRING", required=True)
 OWNER_ID = _get_env_int("OWNER_ID", required=True)
 
 # --- Optional ---------------------------------------------------------
-AUTH_ONLY_ADMINS = _get_env_bool("AUTH_ONLY_ADMINS", default=True)
+# All group members can use the player by default. The old AUTH_ONLY_ADMINS
+# var (set to "true" on many Heroku deploys) is intentionally ignored now;
+# set ADMIN_ONLY_MODE=true to restrict controls to group admins again.
+AUTH_ONLY_ADMINS = _get_env_bool("ADMIN_ONLY_MODE", default=False)
 DOWNLOADS_DIR = _get_env_str("DOWNLOADS_DIR", default="downloads")
 DEFAULT_VIDEO_QUALITY = _get_env_str("DEFAULT_VIDEO_QUALITY", default="hd_720p").lower()
 DEFAULT_AUDIO_QUALITY = _get_env_str("DEFAULT_AUDIO_QUALITY", default="high").lower()
@@ -94,6 +97,7 @@ if SUPPORT_GROUP and not SUPPORT_URL:
 MONGO_DB_URI = _get_env_str("MONGO_DB_URI", default=None)
 LOG_CHANNEL_ID = _get_env_int("LOG_CHANNEL_ID", default=None)
 STREAM_PORT = _get_env_int("STREAM_PORT", default=8000)
+STREAM_PREFETCH_MB = _get_env_int("STREAM_PREFETCH_MB", default=16)  # read-ahead per stream
 
 # --- Movie channel search ---------------------------------------------
 MOVIE_CHANNEL = _get_env_str("MOVIE_CHANNEL", default=None)       # -100... or @username

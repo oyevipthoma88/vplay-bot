@@ -31,9 +31,9 @@
       "description": "Aapki apni Telegram numeric user ID (e.g. @userinfobot se pata karein). Owner hamesha commands use kar sakta hai.",
       "required": true
     },
-    "AUTH_ONLY_ADMINS": {
-      "description": "true rakhein to sirf group admins hi vplay/vskip/vstop wagera control kar sakte hain. false karne par group ka koi bhi member control kar sakega.",
-      "value": "true",
+    "ADMIN_ONLY_MODE": {
+      "description": "Default false: group ka har member vplay/vskip/vstop use kar sakta hai. true karne par sirf group admins.",
+      "value": "false",
       "required": false
     },
     "DEFAULT_VIDEO_QUALITY": {

@@ -131,6 +131,46 @@ def _parse_range(rng: str, file_size: int):
     return start, end, status
 
 
+# Read-ahead buffer per HTTP connection (in 1 MiB chunks). ROOT FIX for
+# "beech me video/audio quality down ho jati hai": MTProto delivers chunks in
+# bursts with short stalls. Without a buffer ffmpeg starves during a stall,
+# PyTgCalls/WebRTC sees late frames and its congestion control drops the
+# bitrate (blurry video, muddy audio) and only slowly climbs back. Fetching
+# ahead keeps ffmpeg fed at a steady rate through those stalls.
+PREFETCH_CHUNKS = max(4, int(getattr(config, "STREAM_PREFETCH_MB", 16) or 16))
+_END = object()
+
+
+async def _prefetch(gen, size: int = PREFETCH_CHUNKS):
+    q: asyncio.Queue = asyncio.Queue(maxsize=size)
+
+    async def _producer():
+        try:
+            async for c in gen:
+                await q.put(c)
+            await q.put(_END)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as e:  # noqa: BLE001 - re-raised in consumer
+            await q.put(e)
+
+    task = asyncio.create_task(_producer())
+    try:
+        while True:
+            item = await q.get()
+            if item is _END:
+                return
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+    finally:
+        task.cancel()
+        try:
+            await task
+        except BaseException:  # noqa: BLE001
+            pass
+
+
 async def _pump(client, message, resp, start: int, length: int, file_size: int,
                 sent=None) -> None:
     """Pump bytes, surviving mid-stream failures.
@@ -149,7 +189,7 @@ async def _pump(client, message, resp, start: int, length: int, file_size: int,
         skip = pos % CHUNK_SIZE
         gen = client.stream_media(message, offset=pos // CHUNK_SIZE)
         try:
-            async for chunk in gen:
+            async for chunk in _prefetch(gen):
                 if skip:
                     chunk = chunk[skip:]
                     skip = 0

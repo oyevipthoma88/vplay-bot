@@ -185,7 +185,7 @@ def _ffmpeg_params(offset: int = 0) -> str:
 
     parts = [
         "-b:start",
-        "-thread_queue_size", "1024",
+        "-thread_queue_size", "4096",
         "-probesize", str(probe),
         "-analyzeduration", str(analyze),
         "-fflags", "+genpts+igndts+discardcorrupt",

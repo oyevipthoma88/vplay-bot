@@ -224,13 +224,52 @@ def movie_channels() -> List:
         val = getattr(config, attr, None)
         if val and val not in out:
             out.append(val)
-    if not out:
-        raw = getattr(config, "MOVIE_CHANNELS", None) or ""
-        for c in str(raw).split(","):
-            c = c.strip()
-            if c:
-                out.append(int(c) if c.lstrip("-").isdigit() else c)
+    raw = getattr(config, "MOVIE_CHANNELS", None) or ""
+    for c in str(raw).split(","):
+        c = c.strip()
+        if c:
+            c = int(c) if c.lstrip("-").isdigit() else c
+            if c not in out:
+                out.append(c)
     return out
+
+
+# Channels the assistant is a member/admin of, found automatically.
+_AUTO_CHANNELS: List = []
+_AUTO_TS = 0.0
+_AUTO_TTL = 30 * 60
+
+
+async def auto_channels(client=None) -> List:
+    """ROOT FIX for "Movie nahi mili" when nobody ran /owner -> Add Channel
+    (or the setting was lost on a Heroku restart without Mongo): use every
+    channel the assistant account has joined. The owner said the bot and the
+    assistant are admins of the movie channel, so it is always in this list.
+    """
+    global _AUTO_TS
+    if _AUTO_CHANNELS and time.time() - _AUTO_TS < _AUTO_TTL:
+        return list(_AUTO_CHANNELS)
+    cli = client if client is not None else assistant
+    found: List = []
+    try:
+        async for d in cli.get_dialogs():
+            chat = getattr(d, "chat", None)
+            if chat is not None and chat.type == enums.ChatType.CHANNEL:
+                found.append(chat.id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("movie_search auto_channels fail: %s", e)
+    if found:
+        _AUTO_CHANNELS[:] = found
+        _AUTO_TS = time.time()
+        logger.info("movie_search: auto-detected %d channel(s): %s", len(found), found[:10])
+    return list(_AUTO_CHANNELS)
+
+
+async def all_channels(client=None) -> List:
+    chs = movie_channels()
+    if chs:
+        return chs
+    return (await auto_channels(client))[:15]
 
 
 def not_found_text(query: str) -> str:
@@ -434,12 +473,11 @@ async def search(query: str, client=None) -> Tuple[Optional[Message], str]:
             return msg, src
 
     cli = client if client is not None else assistant
-    channels = movie_channels()
+    channels = await all_channels(cli)
     if not channels:
         logger.warning(
-            "movie_search: NO movie channels configured — only global search "
-            "will run. Set via /owner → Movie Channels → Add Channel, or the "
-            "MOVIE_CHANNELS env var. Single-word queries often miss in global."
+            "movie_search: NO movie channels found — assistant ko movie "
+            "channel me add karein. Only global search will run."
         )
 
     # Spelling correction (apply once, cache both)
@@ -475,7 +513,7 @@ async def search(query: str, client=None) -> Tuple[Optional[Message], str]:
     if channels:
         for ch in channels:
             try:
-                cand = await _recent_scan(cli, ch, q, limit=200)
+                cand = await _recent_scan(cli, ch, q, limit=_scan_limit())
                 best, score = _best(q, cand)
                 if best is not None and score >= _MIN_SCORE:
                     _CACHE[key] = (time.time(), best, "channel")
@@ -521,6 +559,100 @@ async def search(query: str, client=None) -> Tuple[Optional[Message], str]:
     _CACHE[key] = (time.time(), None, "")
     logger.info("movie_search '%s' -> miss", q)
     return None, ""
+
+
+def _scan_limit() -> int:
+    try:
+        return max(200, min(int(getattr(config, "MOVIE_SCAN_LIMIT", 1500) or 1500), 5000))
+    except (TypeError, ValueError):
+        return 1500
+
+
+def _query_variants(q: str) -> List[str]:
+    """Original query, spelling-fixed query, and each meaningful word.
+    Telegram's server search is exact-ish, so a typo ("jailr") or an extra
+    word ("jailer movie") misses — single words widen the net and the local
+    fuzzy scorer filters the noise back out."""
+    out = [q]
+    fixed = correct_spelling(q)
+    if fixed and fixed not in out:
+        out.append(fixed)
+    stop = {"movie", "film", "full", "hindi", "dubbed", "hd", "the", "season", "episode", "ep"}
+    for t in normalize(q).split():
+        if len(t) >= 3 and t not in stop and t not in out:
+            out.append(t)
+    return out[:5]
+
+
+async def search_many(query: str, client=None, limit: int = 8) -> List[Message]:
+    """Return up to `limit` distinct playable matches, best first.
+
+    Used by /vplay to show a "kaunsa play karein?" button list instead of
+    silently auto-picking one result (e.g. /vplay toxic -> 3 TOXIC files).
+    """
+    q = (query or "").strip()
+    if len(q) < 2 or not getattr(config, "MOVIE_SEARCH_ENABLED", True):
+        return []
+    cli = client if client is not None else assistant
+    channels = await all_channels(cli)
+    variants = _query_variants(q)
+    pool: List[Message] = []
+
+    if channels:
+        tasks = [_live_search_one(cli, ch, v) for ch in channels for v in variants]
+        for r in await asyncio.gather(*tasks, return_exceptions=True):
+            if isinstance(r, list):
+                pool.extend(r)
+        # File-name-only uploads are invisible to Telegram search: scan history.
+        scans = await asyncio.gather(
+            *[_recent_scan(cli, ch, q, limit=_scan_limit()) for ch in channels],
+            return_exceptions=True,
+        )
+        for r in scans:
+            if isinstance(r, list):
+                pool.extend(r)
+
+    if not pool:
+        glimit = int(getattr(config, "MOVIE_GLOBAL_LIMIT", 25) or 25)
+        for v in variants[:2]:
+            pool.extend(await _global_search(cli, v, glimit))
+            if pool:
+                break
+
+    ranked = []
+    seen = set()
+    for msg in pool:
+        chat_id = getattr(getattr(msg, "chat", None), "id", None)
+        key = (chat_id, getattr(msg, "id", None))
+        if key in seen:
+            continue
+        seen.add(key)
+        title = _title_of(msg)
+        parsed = parse_caption(title)
+        hay = f"{parsed['title']} {parsed.get('year', '')} {title}"
+        sc = max(_fuzzy_score(v, hay) for v in variants)
+        if sc < _MIN_SCORE:
+            continue
+        ranked.append((sc, _quality_rank(title), getattr(msg, "id", 0) or 0, msg))
+    ranked.sort(key=lambda c: (c[0], c[1], c[2]), reverse=True)
+    out = [c[3] for c in ranked[:limit]]
+    logger.info("movie_search many %r channels=%d pool=%d results=%d", q, len(channels), len(pool), len(out))
+    return out
+
+
+def result_label(msg: Message) -> str:
+    title = _title_of(msg)
+    _, media = _media_of(msg)
+    size = (getattr(media, "file_size", 0) or 0) / (1024 ** 3)
+    p = parse_caption(title)
+    label = p["title"][:38]
+    if p.get("year"):
+        label += f" ({p['year']})"
+    if p.get("quality"):
+        label += f" {p['quality']}"
+    if size:
+        label += f" · {size:.1f}GB"
+    return label[:60]
 
 
 def build_track(msg: Message, requested_by: str, requested_by_id: int,
