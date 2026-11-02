@@ -121,6 +121,71 @@ async def _refresh_thumb_id(origin) -> str | None:
     return None
 
 
+async def _download_fresh_thumb(origin) -> str | None:
+    """Fetch the origin message fresh and DOWNLOAD its thumbnail to a local file.
+
+    ROOT FIX: `_refresh_thumb_id` returned a file_id STRING. Telegram's
+    thumbnail file_ids are type THUMBNAIL, which send_photo() rejects with
+    "Expected PHOTO, got THUMBNAIL". And download_media(file_id_string)
+    reconstructs the reference from the stale string -> FILE_REFERENCE_EXPIRED.
+
+    Fetching the message again and passing the *Thumbnail object* to
+    download_media() gives Pyrogram a fresh file_reference, so the download
+    actually works. Source: Telegram file references expire (~24h) and must
+    be refreshed by re-fetching the message.
+    """
+    if not origin or len(origin) != 2:
+        return None
+    _chat_id, _msg_id = origin
+
+    for cli in (bot, assistant):
+        try:
+            msg = await cli.get_messages(_chat_id, _msg_id)
+            if not msg or getattr(msg, "empty", False):
+                continue
+
+            for attr in ("video", "document", "audio", "animation"):
+                media = getattr(msg, attr, None)
+                if media is None:
+                    continue
+
+                # 1a. Try the single thumbnail object
+                thumb = getattr(media, "thumbnail", None) or getattr(media, "thumb", None)
+                if thumb is not None:
+                    try:
+                        path = await bot.download_media(thumb)
+                        if path:
+                            logger.info("fresh thumb downloaded (single): %s", path)
+                            return path
+                    except Exception as e:  # noqa: BLE001
+                        logger.info("download fresh single thumb fail: %s", e)
+
+                # 1b. Try largest from thumbs list
+                thumbs = getattr(media, "thumbs", None) or []
+                if thumbs:
+                    try:
+                        ordered = sorted(
+                            thumbs,
+                            key=lambda x: (getattr(x, "width", 0) or 0) * (getattr(x, "height", 0) or 0),
+                            reverse=True,
+                        )
+                    except Exception:  # noqa: BLE001
+                        ordered = list(thumbs)
+                    for th in ordered:
+                        try:
+                            path = await bot.download_media(th)
+                            if path:
+                                logger.info("fresh thumb downloaded (list): %s", path)
+                                return path
+                        except Exception as e:  # noqa: BLE001
+                            logger.debug("thumb variant fail: %s", e)
+                            continue
+        except Exception as e:  # noqa: BLE001
+            logger.info("download_fresh_thumb via %s: %s", cli.name, e)
+
+    return None
+
+
 def _is_expired_ref(e: BaseException) -> bool:
     low = f"{type(e).__name__} {e}".lower()
     return (
@@ -132,75 +197,63 @@ def _is_expired_ref(e: BaseException) -> bool:
 
 async def _send_photo_card(chat_id: int, thumb_id: str, text: str, markup,
                            origin=None) -> Message:
-    """Send a photo card; self-heals expired thumbnail file references.
+    """Send photo card. Fresh thumbnail download FIRST, then stored id fallback.
 
-    ROOT FIX: the previous version only refreshed the file_id when the FIRST
-    send raised FileReferenceExpired. But sending a *thumbnail* id to
-    send_photo() raises ValueError("Expected PHOTO, got THUMBNAIL") instead —
-    so we fell through to download_media() with the STALE id, which then failed
-    with FILE_REFERENCE_EXPIRED (visible in logs). Now we refresh the id from
-    the origin message BEFORE trying to download, for every attempt.
+    Root fix for FILE_REFERENCE_EXPIRED: always re-fetch the origin message
+    and download the thumbnail object (fresh file_reference) before touching
+    the stored thumb_id. The stored file_id string becomes useless once its
+    file_reference expires (~24h).
     """
-    async def _send(tid):
+    async def _send_path(path):
         return await bot.send_photo(
-            chat_id, tid, caption=text, reply_markup=markup,
+            chat_id, path, caption=text, reply_markup=markup,
             parse_mode=ParseMode.HTML,
         )
 
-    async def _try_one(tid) -> Message | None:
-        # 1. direct send (fast path)
+    # ---------- Path 1: fresh download from origin ----------
+    if origin:
         try:
-            return await _send(tid)
+            fresh_path = await _download_fresh_thumb(origin)
+            if fresh_path:
+                branded = await _brand_thumb_async(fresh_path)
+                try:
+                    return await _send_path(branded)
+                finally:
+                    try:
+                        os.remove(fresh_path)
+                    except Exception:  # noqa: BLE001
+                        pass
         except Exception as e:  # noqa: BLE001
-            first_err = e
+            logger.info("fresh thumbnail path failed: %s", e)
 
-        # 2. download and reupload
+    # ---------- Path 2: try stored thumb_id directly (fast if fresh) ----------
+    if thumb_id:
+        try:
+            return await bot.send_photo(
+                chat_id, thumb_id, caption=text, reply_markup=markup,
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.info("direct send_photo(%s…): %s", thumb_id[:20], type(e).__name__)
+
+    # ---------- Path 3: download stored id (may still work) ----------
+    if thumb_id:
         path = None
         try:
-            path = await bot.download_media(tid)
+            path = await bot.download_media(thumb_id)
             if path:
                 path = await _brand_thumb_async(path)
-                return await bot.send_photo(
-                    chat_id, path, caption=text, reply_markup=markup,
-                    parse_mode=ParseMode.HTML,
-                )
+                return await _send_path(path)
         except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "thumbnail download fail (id=%s…): %s", tid[:20], e
-            )
+            logger.info("download_media(%s…): %s", thumb_id[:20], type(e).__name__)
         finally:
             if path:
                 try:
                     os.remove(path)
                 except Exception:  # noqa: BLE001
                     pass
-        raise first_err
 
-    # Build the id sequence: fresh-from-origin FIRST, then the stored id.
-    _ids = []
-    if origin:
-        fresh = await _refresh_thumb_id(origin)
-        if fresh:
-            _ids.append(fresh)
-    if thumb_id and thumb_id not in _ids:
-        _ids.append(thumb_id)
-
-    last_err = None
-    for tid in _ids:
-        try:
-            return await _try_one(tid)
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-            logger.info(
-                "send_photo attempt failed (id=%s…): %s", tid[:20], type(e).__name__
-            )
-            # If this id was stale and we have an origin, get a *new* one
-            if origin and _is_expired_ref(e):
-                fresh = await _refresh_thumb_id(origin)
-                if fresh and fresh not in _ids:
-                    _ids.append(fresh)
-
-    raise last_err if last_err else RuntimeError("no thumbnail id available")
+    raise RuntimeError("all thumbnail paths failed")
 
 
 async def _post_card(chat_id: int, text: str, edit_message: Message = None,

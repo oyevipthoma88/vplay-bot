@@ -435,6 +435,12 @@ async def search(query: str, client=None) -> Tuple[Optional[Message], str]:
 
     cli = client if client is not None else assistant
     channels = movie_channels()
+    if not channels:
+        logger.warning(
+            "movie_search: NO movie channels configured — only global search "
+            "will run. Set via /owner → Movie Channels → Add Channel, or the "
+            "MOVIE_CHANNELS env var. Single-word queries often miss in global."
+        )
 
     # Spelling correction (apply once, cache both)
     if channels:
@@ -485,11 +491,22 @@ async def search(query: str, client=None) -> Tuple[Optional[Message], str]:
     _global_queries = [q]
     _toks = [t for t in normalize(q).split() if len(t) >= 3]
     if len(_toks) > 1:
+        # Multi-word: also try the first token (broader match)
         _global_queries.append(_toks[0])
+    elif len(_toks) == 1:
+        # ROOT FIX: single common word ("toxic") routinely misses in Telegram's
+        # global search because it matches captions only and relevance-limits
+        # generic terms. Appending recent years usually unlocks the match
+        # ("toxic 2026" worked in testing). Keep the original query first so
+        # exact-title users still get their preferred hit.
+        from datetime import datetime
+        _yr = datetime.now().year
+        for _y in (_yr, _yr - 1, _yr - 2):
+            _global_queries.append(f"{q} {_y}")
 
     for _gq in _global_queries:
         try:
-            glimit = int(getattr(config, "MOVIE_GLOBAL_LIMIT", 20) or 20)
+            glimit = int(getattr(config, "MOVIE_GLOBAL_LIMIT", 50) or 20)
             best, score = _best(_gq, await _global_search(cli, _gq, glimit))
             if best is not None and score >= _MIN_SCORE:
                 _CACHE[key] = (time.time(), best, "global")
