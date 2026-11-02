@@ -266,10 +266,17 @@ async def auto_channels(client=None) -> List:
 
 
 async def all_channels(client=None) -> List:
-    chs = movie_channels()
-    if chs:
-        return chs
-    return (await auto_channels(client))[:15]
+    """Configured channels FIRST, then every channel the assistant has joined.
+
+    Earlier only configured channels were used when any existed — so one
+    stale/wrong id in /owner or MOVIE_CHANNELS hid the real movie channel
+    (where bot + assistant are admins) and every search said "nahi mili".
+    """
+    out: List = list(movie_channels())
+    for c in await auto_channels(client):
+        if c not in out:
+            out.append(c)
+    return out[:20]
 
 
 def not_found_text(query: str) -> str:
