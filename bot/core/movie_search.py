@@ -331,6 +331,39 @@ def _weights():
     return _SORT_MODES.get(mode, _SORT_MODES["latest"])
 
 
+async def _recent_scan(client, chat_id, query: str, limit: int = 200) -> List[Message]:
+    """Scan recent media in a chat and fuzzy-match locally.
+
+    Telegram's server-side search matches message text/caption, NOT the file
+    name. A movie whose caption is "🍿 New Upload" but filename is
+    "TOXiC.2026.720p.mkv" is invisible to search_messages("toxic"). Scanning
+    the recent history and scoring the file_name locally catches it.
+    """
+    hits: List[tuple] = []
+    scanned = 0
+    try:
+        async for msg in client.get_chat_history(chat_id, limit=limit):
+            scanned += 1
+            if not _is_playable(msg):
+                continue
+            title = _title_of(msg)
+            parsed = parse_caption(title)
+            hay = f"{parsed['title']} {parsed.get('year', '')} {title}"
+            sc = _fuzzy_score(query, hay)
+            if sc >= _MIN_SCORE:
+                hits.append((sc, msg))
+        hits.sort(key=lambda x: -x[0])
+    except FloodWait as e:
+        await asyncio.sleep(e.value + 1)
+    except Exception as e:  # noqa: BLE001
+        logger.info("movie_search recent_scan %s: %s", chat_id, e)
+    logger.info(
+        "movie_search recent_scan chat=%s scanned=%d hits=%d",
+        chat_id, scanned, len(hits),
+    )
+    return [m for _, m in hits]
+
+
 def _best(query: str, messages: List[Message]) -> Tuple[Optional[Message], int]:
     """Weighted ranking: score + quality + recency.
 
@@ -430,16 +463,43 @@ async def search(query: str, client=None) -> Tuple[Optional[Message], str]:
         except Exception as e:  # noqa: BLE001
             logger.warning("movie_search channel stage fail: %s", e)
 
-    # Stage 2: global fallback
-    try:
-        glimit = int(getattr(config, "MOVIE_GLOBAL_LIMIT", 20) or 20)
-        best, score = _best(q, await _global_search(cli, q, glimit))
-        if best is not None and score >= _MIN_SCORE:
-            _CACHE[key] = (time.time(), best, "global")
-            logger.info("movie_search '%s' -> global (score %d)", q, score)
-            return best, "global"
-    except Exception as e:  # noqa: BLE001
-        logger.warning("movie_search global stage fail: %s", e)
+    # Stage 1.5: recent-scan each channel (catches file-name-only matches that
+    # Telegram's caption search misses, e.g. "/vplay toxic" when only the
+    # file_name contains "TOXiC" but the caption is emoji-only).
+    if channels:
+        for ch in channels:
+            try:
+                cand = await _recent_scan(cli, ch, q, limit=200)
+                best, score = _best(q, cand)
+                if best is not None and score >= _MIN_SCORE:
+                    _CACHE[key] = (time.time(), best, "channel")
+                    logger.info(
+                        "movie_search '%s' -> channel-recent (score %d)", q, score
+                    )
+                    return best, "channel"
+            except Exception as e:  # noqa: BLE001
+                logger.warning("movie_search recent stage %s: %s", ch, e)
+
+    # Stage 2: global fallback (exact query, then first-token retry for
+    # single-word queries that Telegram's global search underserves).
+    _global_queries = [q]
+    _toks = [t for t in normalize(q).split() if len(t) >= 3]
+    if len(_toks) > 1:
+        _global_queries.append(_toks[0])
+
+    for _gq in _global_queries:
+        try:
+            glimit = int(getattr(config, "MOVIE_GLOBAL_LIMIT", 20) or 20)
+            best, score = _best(_gq, await _global_search(cli, _gq, glimit))
+            if best is not None and score >= _MIN_SCORE:
+                _CACHE[key] = (time.time(), best, "global")
+                logger.info(
+                    "movie_search '%s' -> global (query=%r, score %d)",
+                    q, _gq, score,
+                )
+                return best, "global"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("movie_search global stage fail: %s", e)
 
     _CACHE[key] = (time.time(), None, "")
     logger.info("movie_search '%s' -> miss", q)
