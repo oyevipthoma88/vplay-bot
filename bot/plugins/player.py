@@ -10,7 +10,7 @@ from pyrogram.types import CallbackQuery, Message
 
 from bot import config
 from bot.core import player as player_core
-from bot.core.clients import bot
+from bot.core.clients import assistant, bot
 from bot.core.logger_gc import log_play, log_stop
 from bot.core.queue import get_state
 from bot.database import add_served_chat, add_served_user, increment_play_count
@@ -82,29 +82,102 @@ async def _brand_thumb_async(path: str) -> str:
         return path
 
 
-async def _send_photo_card(chat_id: int, thumb_id: str, text: str, markup) -> Message:
-    """Send photo card. On THUMBNAIL->PHOTO mismatch, download and reupload."""
-    await asyncio.sleep(1.0)  # let stream buffer stabilize (non-blocking)
+async def _refresh_thumb_id(origin) -> str | None:
+    """Re-fetch the ORIGINAL message and return a fresh thumbnail file_id.
+
+    A file_id embeds a file_reference that Telegram invalidates (usually
+    < 24h, or as soon as the media is re-fetched). Sending / downloading
+    with a stale file_id raises FILE_REFERENCE_EXPIRED. The only fix is to
+    fetch the message again and read the new thumbnail from it.
+    """
+    if not origin or len(origin) != 2:
+        return None
+    _chat_id, _msg_id = origin
+    for cli in (bot, assistant):
+        try:
+            msg = await cli.get_messages(_chat_id, _msg_id)
+            if not msg or getattr(msg, "empty", False):
+                continue
+            for attr in ("video", "document", "audio", "animation"):
+                media = getattr(msg, attr, None)
+                if media is None:
+                    continue
+                t = getattr(media, "thumbnail", None) or getattr(media, "thumb", None)
+                if t is not None and getattr(t, "file_id", None):
+                    return t.file_id
+                thumbs = getattr(media, "thumbs", None) or []
+                best = None
+                for th in thumbs:
+                    fid = getattr(th, "file_id", None)
+                    if not fid:
+                        continue
+                    area = (getattr(th, "width", 0) or 0) * (getattr(th, "height", 0) or 0)
+                    if best is None or area > best[0]:
+                        best = (area, fid)
+                if best:
+                    return best[1]
+        except Exception as e:  # noqa: BLE001
+            logger.debug("refresh_thumb via %s: %s", cli.name, e)
+    return None
+
+
+def _is_expired_ref(e: BaseException) -> bool:
+    low = f"{type(e).__name__} {e}".lower()
+    return (
+        "filereferenceexpired" in low
+        or "file_reference_expired" in low
+        or "fileref_upgrade_needed" in low
+    )
+
+
+async def _send_photo_card(chat_id: int, thumb_id: str, text: str, markup,
+                           origin=None) -> Message:
+    """Send photo card; self-heals expired file references."""
+    async def _send(tid):
+        return await bot.send_photo(
+            chat_id, tid, caption=text, reply_markup=markup,
+            parse_mode=ParseMode.HTML,
+        )
+
     try:
-        return await bot.send_photo(chat_id, thumb_id, caption=text, reply_markup=markup, parse_mode=ParseMode.HTML)
-    except Exception as e:
+        return await _send(thumb_id)
+    except Exception as e:  # noqa: BLE001
         err = str(e).lower()
-        if "expected photo" in err or "thumbnail" in err:
-            logger.info("send_photo type mismatch (%s) — downloading thumb", e)
-            path = None
-            try:
-                path = await bot.download_media(thumb_id)
-                if path:
-                    path = await _brand_thumb_async(path)
-                    return await bot.send_photo(chat_id, path, caption=text, reply_markup=markup, parse_mode=ParseMode.HTML)
-            except Exception as dl_err:
-                logger.warning("thumbnail download fail: %s", dl_err)
-            finally:
-                if path:
-                    try:
-                        os.remove(path)
-                    except Exception:
-                        pass
+        expired = _is_expired_ref(e)
+        mismatch = "expected photo" in err or "thumbnail" in err
+        if not (expired or mismatch):
+            raise
+
+        # Expired reference -> get a fresh file_id from the original message.
+        if expired:
+            fresh = await _refresh_thumb_id(origin)
+            if fresh:
+                try:
+                    return await _send(fresh)
+                except Exception as e2:  # noqa: BLE001
+                    logger.warning("send_photo(fresh id) fail: %s", e2)
+
+        logger.info("send_photo fallback (%s) — downloading thumb", type(e).__name__)
+        tid_to_dl = thumb_id
+        if expired:
+            tid_to_dl = await _refresh_thumb_id(origin) or thumb_id
+        path = None
+        try:
+            path = await bot.download_media(tid_to_dl)
+            if path:
+                path = await _brand_thumb_async(path)
+                return await bot.send_photo(
+                    chat_id, path, caption=text, reply_markup=markup,
+                    parse_mode=ParseMode.HTML,
+                )
+        except Exception as dl_err:  # noqa: BLE001
+            logger.warning("thumbnail download fail: %s", dl_err)
+        finally:
+            if path:
+                try:
+                    os.remove(path)
+                except Exception:  # noqa: BLE001
+                    pass
         raise
 
 
@@ -114,8 +187,17 @@ async def _post_card(chat_id: int, text: str, edit_message: Message = None,
     if markup is None:
         markup = ui.player_markup(chat_id, state)
     thumb = None
+    _origin = None
     if use_thumb and state.current is not None:
         thumb = getattr(state.current, "thumb_id", None)
+        # chat_id/message_id of the ORIGINAL media message, used to refresh an
+        # expired file reference when sending the thumbnail.
+        try:
+            _parts = str(getattr(state.current, "source", "")).rstrip("/").split("/")
+            if len(_parts) >= 2:
+                _origin = (int(_parts[-2]), int(_parts[-1]))
+        except (TypeError, ValueError):
+            _origin = None
         if not thumb:
             try:
                 from bot.database.owner_data import get_default_thumb
@@ -135,7 +217,7 @@ async def _post_card(chat_id: int, text: str, edit_message: Message = None,
                         await edit_message.delete()
                     except Exception:  # noqa: BLE001
                         pass
-                    msg = await _send_photo_card(chat_id, thumb, text, markup)
+                    msg = await _send_photo_card(chat_id, thumb, text, markup, origin=_origin)
             else:
                 if _is_photo:
                     try:
@@ -153,7 +235,7 @@ async def _post_card(chat_id: int, text: str, edit_message: Message = None,
     if msg is None:
         if thumb:
             try:
-                msg = await _send_photo_card(chat_id, thumb, text, markup)
+                msg = await _send_photo_card(chat_id, thumb, text, markup, origin=_origin)
             except Exception as e:  # noqa: BLE001
                 logger.warning("send_photo fail (%s) — fallback to text", e)
                 msg = await bot.send_message(chat_id, text, reply_markup=markup, **ui.HTML, **ui.NO_PREVIEW)

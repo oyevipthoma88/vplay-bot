@@ -51,6 +51,10 @@ DEFAULT_AUDIO_QUALITY = _get_env_str("DEFAULT_AUDIO_QUALITY", default="high").lo
 AUDIO_CHANNELS = _get_env_int("AUDIO_CHANNELS", default=2)  # 1=mono, 2=stereo
 VIDEO_FPS = _get_env_int("VIDEO_FPS", default=30)  # Telegram max=30
 FFMPEG_THREADS = _get_env_int("FFMPEG_THREADS", default=2)
+FFMPEG_READRATE = _get_env_str("FFMPEG_READRATE", default="0")   # 0 = off (recommended)
+FFMPEG_PROBE_SIZE = _get_env_int("FFMPEG_PROBE_SIZE", default=3000000)
+FFMPEG_ANALYZE_US = _get_env_int("FFMPEG_ANALYZE_US", default=3000000)
+FFMPEG_RW_TIMEOUT_US = _get_env_int("FFMPEG_RW_TIMEOUT_US", default=8000000)
 ASSISTANT_FALLBACK = _get_env_bool("ASSISTANT_FALLBACK", default=True)
 STARTUP_NOTIFY = _get_env_bool("STARTUP_NOTIFY", default=True)
 

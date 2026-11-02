@@ -305,9 +305,17 @@ _SORT_MODES = {
 
 
 def _quality_rank(text: str) -> int:
-    """Return 0-5 quality tier. 2160p=5, 1080p=4, 720p=3, 480p=2."""
+    """Return 0-5 quality tier.
+
+    Explicit resolutions are checked BEFORE the "4k"/"2160p" tokens, because
+    group names like "DS4K" would otherwise beat the real "480P" tag in the
+    same filename (e.g. "Mirzapur EXTENDED DS4K ... 480P" was ranked 2160p).
+    """
     t = normalize(text)
-    for q, r in _QUALITY_RANK.items():
+    for q, r in (("1080p", 4), ("720p", 3), ("480p", 2), ("360p", 1)):
+        if q in t:
+            return r
+    for q, r in (("2160p", 5), ("4k", 5), ("uhd", 5), ("1080p", 4), ("fhd", 4)):
         if q in t:
             return r
     if "bluray" in t or "blu ray" in t:
@@ -317,7 +325,6 @@ def _quality_rank(text: str) -> int:
     if "hdcam" in t or "hdts" in t or "hdtc" in t or "camrip" in t:
         return 1
     return 0
-
 
 def _weights():
     mode = (getattr(config, "MOVIE_SORT_MODE", "latest") or "latest").lower()

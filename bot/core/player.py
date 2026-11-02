@@ -133,56 +133,90 @@ def _audio_quality():
         except (TypeError, ValueError) as e:
             logger.warning("AudioParameters rejected (%s) — enum fallback", e)
     return AudioQuality.HIGH
-def _ffmpeg_params(offset: int = 0) -> str:
-    """Tier 1 — buffer-first flags + audio gap-fill (root fix).
+def _needs_manual_scale() -> bool:
+    """True when py-tgcalls build has no VideoParameters -> we scale ourselves."""
+    return VideoParameters is None
 
-    REMOVED (these caused the stutter):
-      -re            paces reads to exactly realtime -> zero headroom
-      -fflags nobuffer / -flags low_delay / -max_delay 0
-                     disable every buffer; a pipe consumer that reads on a
-                     fixed 20 ms cadence needs a FULL buffer, not a thin one.
 
-    ADDED:
-      -readrate 2.0           bounded read-ahead (~2x realtime): pipe stays
-                              full, but ffmpeg never slurps a 4 GB file
-      -fflags +genpts+igndts+discardcorrupt
-                              rebuild timestamps, drop broken packets
-      -err_detect ignore_err  one corrupt packet must not kill the stream
-      -reconnect* / -rw_timeout  survive a hiccup in our local streamer
-      -af aresample=async=1:first_pts=0
-                              fill audio gaps + align PTS (classic fix)
+def _scale_flag() -> str:
+    """Guarantee 720p even without VideoParameters.
+
+    Telegram caps group calls at 720p@30. If we leave scaling to
+    VideoQuality enum, some builds pass the raw source size and Telegram
+    does the downscale server-side (extra CPU + visible quality loss).
     """
+    if not _needs_manual_scale():
+        return ""
+    fps = min(max(int(getattr(config, "VIDEO_FPS", 30) or 30), 15), 30)
+    return (
+        "-vf:video:mid "
+        "scale=1280:720:force_original_aspect_ratio=decrease,"
+        "setsar=1 -r:video:mid " + str(fps)
+    )
+
+
+def _readrate_flag() -> str:
+    """Optional read-ahead. EMPTY BY DEFAULT (root fix for audio stutter).
+
+    PyTgCalls spawns TWO ffmpeg processes (audio + video), each opening its
+    own HTTP connection to our local streamer, which pulls from Telegram over
+    MTProto. -readrate 2.0 makes BOTH ask for 2x realtime = 4x MTProto
+    throughput. The streamer can deliver ~1x, so both ffmpeg starve ->
+    audible stutter. ffmpeg also "catches up" in bursts after a stall, which
+    congests aiohttp and triggers the next stall.
+
+    Without the flag the 64 KB output pipe provides backpressure: a steady
+    ~1x pull with small headroom. Override only if the box has spare I/O:
+    FFMPEG_READRATE=1.1 .. 1.3
+    """
+    try:
+        val = float(getattr(config, "FFMPEG_READRATE", 0) or 0)
+    except (TypeError, ValueError):
+        val = 0.0
+    return f"-readrate {val:g}" if val > 0 else ""
+
+
+def _ffmpeg_params(offset: int = 0) -> str:
+    """Tier 1 — lean, steady-pull, gap-filling."""
     threads = max(2, int(getattr(config, "FFMPEG_THREADS", 2) or 2))
+    probe = int(getattr(config, "FFMPEG_PROBE_SIZE", 3000000) or 3000000)
+    analyze = int(getattr(config, "FFMPEG_ANALYZE_US", 3000000) or 3000000)
+    rw_timeout = int(getattr(config, "FFMPEG_RW_TIMEOUT_US", 8000000) or 8000000)
+
     parts = [
         "-b:start",
-        "-thread_queue_size", "4096",
-        "-probesize", "10000000",
-        "-analyzeduration", "10000000",
+        "-thread_queue_size", "1024",
+        "-probesize", str(probe),
+        "-analyzeduration", str(analyze),
         "-fflags", "+genpts+igndts+discardcorrupt",
         "-err_detect", "ignore_err",
         "-reconnect", "1",
         "-reconnect_streamed", "1",
-        "-reconnect_delay_max", "5",
-        "-rw_timeout", "15000000",
-        "-readrate", "2.0",
-        "-threads", str(threads),
+        "-reconnect_delay_max", "2",
+        "-rw_timeout", str(rw_timeout),
     ]
+    rr = _readrate_flag()
+    if rr:
+        parts += rr.split()
+    parts += ["-threads", str(threads)]
     if offset > 0:
         parts += ["-ss", str(int(offset))]
     parts.append("-b:end")
-    parts += ["-af:audio:mid", "aresample=async=1:first_pts=0"]
+    sc = _scale_flag()
+    if sc:
+        parts += sc.split()
+    parts += ["-af:audio:mid", "aresample=async=1"]
     return " ".join(parts)
 
 
 def _ffmpeg_params_safe(offset: int = 0) -> str:
-    """Tier 2 — core buffering only. No -af, no -readrate, no http options,
-    so this works on any ffmpeg build and any source type."""
+    """Tier 2 — buffering only, no -af / no network options."""
     threads = max(2, int(getattr(config, "FFMPEG_THREADS", 2) or 2))
     parts = [
         "-b:start",
-        "-thread_queue_size", "4096",
-        "-probesize", "10000000",
-        "-analyzeduration", "10000000",
+        "-thread_queue_size", "1024",
+        "-probesize", "3000000",
+        "-analyzeduration", "3000000",
         "-fflags", "+genpts+igndts+discardcorrupt",
         "-err_detect", "ignore_err",
         "-threads", str(threads),
@@ -198,6 +232,8 @@ def _ffmpeg_params_minimal(offset: int = 0) -> str:
     return f"-ss {int(offset)}" if offset > 0 else ""
 
 
+
+
 async def preflight_probe(source: str) -> None:
     """Runs ffprobe ourselves BEFORE handing the source to PyTgCalls.
 
@@ -210,7 +246,9 @@ async def preflight_probe(source: str) -> None:
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "error", "-print_format", "json", "-show_format",
-            "-show_streams", source,
+            "-show_streams",
+            "-probesize", "2000000", "-analyzeduration", "2000000",
+            source,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
     except FileNotFoundError as e:
@@ -219,7 +257,7 @@ async def preflight_probe(source: str) -> None:
             "'heroku-community/apt' buildpack add karein (Aptfile me ffmpeg hai), phir redeploy."
         ) from e
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=20)
     except asyncio.TimeoutError as e:
         try:
             proc.kill()
