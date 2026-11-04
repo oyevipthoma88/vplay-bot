@@ -6,6 +6,15 @@ Ek Telegram bot jo group ke **video/voice chat** mein seedha video/audio play ka
 
 > **Deploy button note:** GitHub repository privacy ke kaaran repo abhi private hai. Heroku ka one-click deploy flow private GitHub template ko access nahi kar sakta. Button ko use karne se pehle repo ko public karna hoga, ya repo ko apne account ke kisi public mirror/template mein rakhna hoga. Private repo ko bina public kiye deploy karne ke liye Heroku Dashboard se app bana kar isi repository ko deploy source ke roop mein configure karein.
 
+## v1.5 — kya naya hai
+
+- **/vplay naam** ab channel ke local index se search karta hai — turant result, spelling galti chalegi (`mirjapur` → Mirzapur, `hanumanansh` → Hanuman Ansh), file name *aur* caption dono me dhoondta hai.
+- **Latest upload sabse upar.** Ek hi result ho to seedha play; zyada results ho to rangeen buttons (🟢 newest, 🔵 baaki, 🔴 cancel) + pages. Jo button dabaoge wahi play hoga.
+- **Nayi upload turant milti hai** — channel me post hote hi index me add (bot + assistant dono sunte hain). Delete/edit bhi update hota hai.
+- **Quality drop fix:** pehle ek hi movie Telegram se 2 baar (audio + video) download hoti thi; ab ek shared cache se dono padhte hain. Fast crypto (`tgcrypto-pyrofork`) bhi add kiya.
+- **Fast start:** /vplay par file ka pehla hissa pehle se download hone lagta hai.
+- `/vindex` — index status · `/vindex rebuild` — owner dobara scan karwa sakta hai.
+
 ## Features
 
 - `/vplay` — kisi video/audio file par reply karke, ya `/vplay <direct link>` bhejo — turant play ya queue

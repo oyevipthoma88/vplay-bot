@@ -170,16 +170,10 @@ def _title_of(msg: Message, media=None) -> str:
 
 
 def _is_playable(msg: Message) -> bool:
-    kind, media = _media_of(msg)
-    if kind is None:
-        return False
-    if kind == "document":
-        mime = (getattr(media, "mime_type", "") or "").lower()
-        return (
-            mime.startswith("video") or mime.startswith("audio")
-            or mime in ("application/x-matroska", "application/octet-stream")
-        )
-    return True
+    # Single source of truth (also checks file extension, so .mkv files
+    # uploaded with an empty / octet-stream mime type are not skipped).
+    from bot.core.movie_index import is_playable
+    return is_playable(msg)
 
 
 def looks_like_name_query(message) -> bool:
@@ -192,7 +186,11 @@ def looks_like_name_query(message) -> bool:
     arg = parts[1].strip()
     if not arg or _URL_RE.match(arg):
         return False
-    if getattr(message, "reply_to_message", None) is not None:
+    # Only a reply to an actual MEDIA message means "play this file". In
+    # forum/topic groups every message is a "reply" to the topic root, which
+    # used to block name search there completely.
+    replied = getattr(message, "reply_to_message", None)
+    if replied is not None and _media_of(replied)[0] is not None:
         return False
     return True
 
@@ -280,23 +278,44 @@ async def all_channels(client=None) -> List:
 
 
 def not_found_text(query: str) -> str:
+    try:
+        from bot.core import movie_index
+        st = movie_index.status()
+    except Exception:  # noqa: BLE001
+        st = {"ready": False, "building": False, "files": 0, "channels": []}
+    if st.get("building") and not st.get("ready"):
+        idx_line = "⏳ <i>Channel index abhi ban raha hai — 1-2 minute baad dobara try karein.</i>"
+    elif not st.get("channels"):
+        idx_line = ("⚠️ <i>Koi movie channel nahi mila. Assistant ko movie channel me "
+                    "<b>admin</b> banayein, ya /owner → Movie Channel set karein.</i>")
+    else:
+        idx_line = (f"📚 <i>{st.get('files', 0):,} files · {len(st.get('channels', []))} channel "
+                    "me search kiya</i>")
     return (
         "🔍 <b>Movie nahi mili</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔎 <b>Query:</b> <code>{html.escape(query[:80])}</code>\n\n"
+        f"🔎 <b>Query:</b> <code>{html.escape(query[:80])}</code>\n"
+        f"{idx_line}\n\n"
         "<b>Try karein:</b>\n"
-        "• Spelling check karein (<code>/vplay mirzapur</code>)\n"
+        "• Sirf main naam likhein (<code>/vplay toxic</code>)\n"
         "• File par <b>reply</b> karke <code>/vplay</code>\n"
         "• Direct link: <code>/vplay &lt;url&gt;</code>"
     )
 
 
 # ------------------------------------------------------------ search stages
+_THROTTLE_LOCKS: dict = {}
+
+
 async def _throttle(key) -> None:
-    wait = _MIN_INTERVAL - (time.time() - _LAST_CALL.get(key, 0.0))
-    if wait > 0:
-        await asyncio.sleep(wait)
-    _LAST_CALL[key] = time.time()
+    # The old version was racy: parallel tasks all read the same timestamp
+    # and fired together -> FloodWait -> empty results -> "nahi mili".
+    lock = _THROTTLE_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        wait = _MIN_INTERVAL - (time.time() - _LAST_CALL.get(key, 0.0))
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _LAST_CALL[key] = time.time()
 
 
 async def _live_search_one(client, chat_id, query: str, per_filter: int = 8) -> List[Message]:
@@ -591,18 +610,67 @@ def _query_variants(q: str) -> List[str]:
     return out[:5]
 
 
-async def search_many(query: str, client=None, limit: int = 8) -> List[Message]:
-    """Return up to `limit` distinct playable matches, best first.
+async def find(query: str, limit: int = 30):
+    """Main entry for /vplay <name>. Returns (entries, suggested_only).
 
-    Used by /vplay to show a "kaunsa play karein?" button list instead of
-    silently auto-picking one result (e.g. /vplay toxic -> 3 TOXIC files).
+    1. Local channel index (instant, typo-tolerant, latest upload first).
+    2. Live Telegram search as a fallback — while the index is still being
+       built after a restart, or for a post the index has not seen yet.
+    """
+    from bot.core import movie_index
+
+    q = (query or "").strip()
+    if len(q) < 2 or not getattr(config, "MOVIE_SEARCH_ENABLED", True):
+        return [], False
+
+    res, sugg = [], False
+    ready = movie_index.is_ready()
+    if ready:
+        res, sugg = await movie_index.search(q, limit)
+        if res and not sugg:
+            return res, False
+
+    try:
+        msgs = await asyncio.wait_for(search_many(q, limit=limit, scan=not ready), timeout=35)
+    except Exception as e:  # noqa: BLE001
+        logger.info("movie_search live fallback fail: %s", e)
+        msgs = []
+    live = []
+    for m in msgs:
+        chat_id = getattr(getattr(m, "chat", None), "id", None)
+        if chat_id in movie_index._channels:  # noqa: SLF001 - keep index fresh
+            movie_index.add_message(m)
+        e = movie_index.entry_from(m)
+        if e is not None:
+            live.append(e)
+    if live:
+        vocab: dict = {}
+        for e in live:
+            for t in e.tokens:
+                vocab.setdefault(t, []).append(e.key)
+        ranked, s2 = movie_index._search_sync(  # noqa: SLF001
+            live, {w: tuple(v) for w, v in vocab.items()}, q, limit
+        )
+        if ranked and not s2:
+            return ranked, False
+        if not res:
+            live.sort(key=lambda e: e.date, reverse=True)
+            return live[:limit], False
+    return res, sugg
+
+
+async def search_many(query: str, client=None, limit: int = 8, scan: bool = True) -> List[Message]:
+    """Live Telegram search (fallback for the local index).
+
+    `scan=False` skips the slow history scan — used when the local index is
+    already complete and only brand-new / global results are missing.
     """
     q = (query or "").strip()
     if len(q) < 2 or not getattr(config, "MOVIE_SEARCH_ENABLED", True):
         return []
     cli = client if client is not None else assistant
     channels = await all_channels(cli)
-    variants = _query_variants(q)
+    variants = _query_variants(q)[:3]
     pool: List[Message] = []
 
     if channels:
@@ -610,14 +678,15 @@ async def search_many(query: str, client=None, limit: int = 8) -> List[Message]:
         for r in await asyncio.gather(*tasks, return_exceptions=True):
             if isinstance(r, list):
                 pool.extend(r)
-        # File-name-only uploads are invisible to Telegram search: scan history.
-        scans = await asyncio.gather(
-            *[_recent_scan(cli, ch, q, limit=_scan_limit()) for ch in channels],
-            return_exceptions=True,
-        )
-        for r in scans:
-            if isinstance(r, list):
-                pool.extend(r)
+        if scan:
+            # File-name-only uploads are invisible to Telegram search.
+            scans = await asyncio.gather(
+                *[_recent_scan(cli, ch, q, limit=min(_scan_limit(), 600)) for ch in channels[:5]],
+                return_exceptions=True,
+            )
+            for r in scans:
+                if isinstance(r, list):
+                    pool.extend(r)
 
     if not pool:
         glimit = int(getattr(config, "MOVIE_GLOBAL_LIMIT", 25) or 25)
@@ -663,7 +732,7 @@ def result_label(msg: Message) -> str:
 
 
 def build_track(msg: Message, requested_by: str, requested_by_id: int,
-                source: str = "channel") -> Track:
+                source: str = "channel", client=None) -> Track:
     from bot.utils.extract import _short, _thumb_from_media
 
     kind, media = _media_of(msg)
@@ -676,16 +745,23 @@ def build_track(msg: Message, requested_by: str, requested_by_id: int,
         raise ValueError("Movie message ka chat resolve nahi hua.")
 
     try:
-        streamer.remember(msg, assistant)
+        streamer.remember(msg, client or assistant)
     except Exception as e:  # noqa: BLE001
         logger.warning("streamer.remember(movie) fail: %s", e)
 
-    parsed = parse_caption(_title_of(msg, media))
-    clean_title = parsed["title"] or _title_of(msg, media)
-    if parsed.get("year"):
-        clean_title = f"{clean_title} ({parsed['year']})"
-    if parsed.get("quality"):
-        clean_title = f"{clean_title} • {parsed['quality']}"
+    from bot.core.movie_index import entry_from
+    _e = entry_from(msg)
+    if _e is not None:
+        clean_title = _e.title
+        if _e.year:
+            clean_title = f"{clean_title} ({_e.year})"
+        if _e.episode:
+            clean_title = f"{clean_title} {_e.episode}"
+        if _e.quality:
+            clean_title = f"{clean_title} • {_e.quality}"
+    else:
+        parsed = parse_caption(_title_of(msg, media))
+        clean_title = parsed["title"] or _title_of(msg, media)
 
     mime = (getattr(media, "mime_type", "") or "").lower()
     is_video = kind in ("video", "animation", "video_note") or mime.startswith("video")

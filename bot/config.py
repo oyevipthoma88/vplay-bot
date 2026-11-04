@@ -57,7 +57,7 @@ FFMPEG_THREADS = _get_env_int("FFMPEG_THREADS", default=2)
 FFMPEG_READRATE = _get_env_str("FFMPEG_READRATE", default="0")   # 0 = off (recommended)
 FFMPEG_PROBE_SIZE = _get_env_int("FFMPEG_PROBE_SIZE", default=3000000)
 FFMPEG_ANALYZE_US = _get_env_int("FFMPEG_ANALYZE_US", default=3000000)
-FFMPEG_RW_TIMEOUT_US = _get_env_int("FFMPEG_RW_TIMEOUT_US", default=8000000)
+FFMPEG_RW_TIMEOUT_US = _get_env_int("FFMPEG_RW_TIMEOUT_US", default=15000000)
 ASSISTANT_FALLBACK = _get_env_bool("ASSISTANT_FALLBACK", default=True)
 STARTUP_NOTIFY = _get_env_bool("STARTUP_NOTIFY", default=True)
 
@@ -97,7 +97,8 @@ if SUPPORT_GROUP and not SUPPORT_URL:
 MONGO_DB_URI = _get_env_str("MONGO_DB_URI", default=None)
 LOG_CHANNEL_ID = _get_env_int("LOG_CHANNEL_ID", default=None)
 STREAM_PORT = _get_env_int("STREAM_PORT", default=8000)
-STREAM_PREFETCH_MB = _get_env_int("STREAM_PREFETCH_MB", default=16)  # read-ahead per stream
+STREAM_PREFETCH_MB = _get_env_int("STREAM_PREFETCH_MB", default=16)  # read-ahead per file
+STREAM_CACHE_MB = _get_env_int("STREAM_CACHE_MB", default=48)        # shared RAM cache per file
 
 # --- Movie channel search ---------------------------------------------
 MOVIE_CHANNEL = _get_env_str("MOVIE_CHANNEL", default=None)       # -100... or @username
@@ -108,4 +109,6 @@ MOVIE_FUZZY_THRESHOLD = _get_env_int("MOVIE_FUZZY_THRESHOLD", default=60)
 MOVIE_SORT_MODE = _get_env_str("MOVIE_SORT_MODE", default="latest").lower()
 MOVIE_SCAN_LIMIT = _get_env_int("MOVIE_SCAN_LIMIT", default=1500)
 MOVIE_GLOBAL_LIMIT = _get_env_int("MOVIE_GLOBAL_LIMIT", default=25)
-
+MOVIE_INDEX_LIMIT = _get_env_int("MOVIE_INDEX_LIMIT", default=20000)    # max files indexed per channel+type
+MOVIE_INDEX_REFRESH = _get_env_int("MOVIE_INDEX_REFRESH", default=600)  # seconds between incremental scans
+MOVIE_AUTO_MAX = _get_env_int("MOVIE_AUTO_MAX", default=10)              # fallback when no admin channel found

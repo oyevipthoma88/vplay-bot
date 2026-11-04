@@ -20,7 +20,7 @@ from bot.plugins import owner  # noqa: F401,E402
 from bot.plugins import logger as _logger_plugin  # noqa: F401,E402
 
 from bot import __version__, config
-from bot.core import runtime, streamer
+from bot.core import movie_index, runtime, streamer  # movie_index: registers channel-post listeners
 from bot.core.logger_gc import send_log
 from bot.core.player import leave_all, warm_up_assistant_peers
 from bot.core.storage import cleanup_loop
@@ -49,6 +49,7 @@ _BOT_COMMANDS = [
     ("vplayforce", "Force play — queue bypass"),
     ("seekback", "Peeche seek — /seekback 30 ya 1m"),
     ("vvolume", "Volume 1-200"),
+    ("vindex", "Movie channel index status"),
     ("id", "Aapka Telegram ID + chat ID"),
     ("help", "Sab commands"),
 ]
@@ -123,7 +124,12 @@ async def main():
     setup_logging()
 
     started_bot = started_assistant = started_calls = False
-    cleanup_task = None
+    cleanup_task = index_task = None
+    try:
+        import tgcrypto  # noqa: F401
+        logger.info("TgCrypto OK — fast MTProto downloads")
+    except ImportError:
+        logger.warning("TgCrypto MISSING — streams will be slow! pip install tgcrypto-pyrofork")
     try:
         await bot.start()
         started_bot = True
@@ -165,17 +171,20 @@ async def main():
             await send_log(f"🚀 <b>VPlay v{__version__} start</b>\nBot: @{me.username}\n⚡ 0s streamer ON")
         except Exception:  # noqa: BLE001
             pass
+        index_task = asyncio.create_task(movie_index.run_forever())
+        logger.info("Movie channel index: background scan started")
         logger.info("Ready — ab group me /vplay bhejein. Har command yahan log hoga.")
 
         await idle()
     finally:
         logger.info("Shutting down...")
-        if cleanup_task is not None and not cleanup_task.done():
-            cleanup_task.cancel()
-            try:
-                await cleanup_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+        for _task in (cleanup_task, index_task):
+            if _task is not None and not _task.done():
+                _task.cancel()
+                try:
+                    await _task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
         await _safe_stop("streamer", streamer.stop_streamer)
         if started_calls:
             # PyTgCalls 2.x has no stop(); leaving every call is the clean

@@ -1,7 +1,10 @@
 # Kurigram is an actively-maintained drop-in fork of Pyrogram — the
 # import path stays `pyrogram` everywhere in this codebase.
 kurigram>=2.2,<4.0
-tgcrypto>=1.2.5,<2.0
+# Prebuilt fast-crypto wheel for Python 3.12 (plain `tgcrypto` has no
+# 3.12 wheel; without it every MTProto download is decrypted in pure
+# Python -> slow streams and quality drops).
+tgcrypto-pyrofork>=1.2.6,<2.0
 
 # Handles joining + streaming media into a Telegram group video/voice chat.
 py-tgcalls>=2.3.0,<3.0.0

@@ -21,7 +21,7 @@ then run the app on that same loop (see `bot/__main__.py`).
 import asyncio
 import os
 
-__version__ = "1.4.2"
+__version__ = "1.5.0"
 
 # ---------------------------------------------------------------------------
 # Dynamic library path fix for Heroku (apt buildpack)

@@ -1,24 +1,29 @@
-"""Local HTTP streamer: serves Telegram media to ffmpeg/py-tgcalls chunk by
-chunk straight from Telegram (MTProto stream_media) with Range support.
-Playback starts in ~0s — no full-file download to disk, so a 3.5 GB movie
-starts as fast as a 5 MB clip, and seeking works via HTTP Range.
+"""Local HTTP streamer: serves Telegram media to ffmpeg/py-tgcalls straight
+from Telegram (MTProto) with HTTP Range support — no full download, so a
+3 GB movie starts as fast as a 5 MB clip.
 
-Root-cause notes (v1.3.1) — "Telegram file par /vplay chal hi nahi raha":
+v1.5 — shared chunk cache (ROOT FIX for "beech me quality down ho jati hai"
+and "kabhi kabhi jaldi play nahi hota"):
 
-* Pyrogram/Kurigram allow only ONE active download per client by default
-  (`max_concurrent_transmissions=1`, a semaphore held for the whole
-  `stream_media` generator). PyTgCalls opens the URL several times at once
-  (ffprobe for video + audio, then one ffmpeg for AUDIO and one for VIDEO),
-  so the 2nd reader waited forever behind the 1st -> ffprobe timeouts,
-  silent/black streams. The clients now allow parallel transmissions
-  (see `clients.py`) and every request releases its slot immediately.
-* Every HTTP request used to call `get_messages` again (4+ API round-trips
-  before the first frame). The replied message is now registered up-front
-  by `/vplay` and cached, and the file's media DC is warmed in background.
+* PyTgCalls opens the same URL 4-5 times (our ffprobe, its own ffprobe for
+  audio + video, then one ffmpeg for AUDIO and one for VIDEO). Earlier every
+  HTTP request started its OWN Telegram download, so the same movie was
+  downloaded twice in parallel during playback. Both downloads competed for
+  the same MTProto connection, stalled in turns, ffmpeg starved and the
+  WebRTC encoder dropped bitrate (blurry video / muddy audio).
+* Now every file has ONE shared, bounded chunk cache. Readers that ask for
+  the same 1 MiB chunk share a single download; a background worker keeps
+  STREAM_PREFETCH_MB ahead of the furthest reader. The audio and video
+  ffmpeg therefore read from RAM, Telegram is downloaded only once, and the
+  start-up probes reuse the same chunks (much faster start).
+* /vplay warms the first chunk (and the last one for MP4, where the index
+  usually lives) while the bot is still joining the video chat.
 """
 import asyncio
 import logging
 import time
+from collections import OrderedDict
+from typing import Dict, List, Optional
 
 from aiohttp import web
 from pyrogram.errors import FileReferenceExpired, FloodWait
@@ -28,13 +33,23 @@ from bot.core.clients import assistant, bot
 
 logger = logging.getLogger(__name__)
 
-CHUNK_SIZE = 1024 * 1024  # Pyrogram stream_media offset unit (1 MiB)
-_CACHE_TTL = 60 * 60  # file references stay valid for hours; refresh hourly
-_runner = None
+CHUNK_SIZE = 1024 * 1024  # Pyrogram stream_media unit (1 MiB)
 _PORT = config.STREAM_PORT
+_runner = None
+
+# Chunks fetched ahead of the furthest reader.
+PREFETCH_CHUNKS = max(4, int(getattr(config, "STREAM_PREFETCH_MB", 16) or 16))
+# Max chunks kept in RAM per file (must cover the audio/video reader gap).
+CACHE_CHUNKS = max(PREFETCH_CHUNKS * 2 + 8, int(getattr(config, "STREAM_CACHE_MB", 48) or 48))
+_READ_TIMEOUT = 25        # seconds a reader waits for one chunk before retrying
+_STORE_IDLE_TTL = 10 * 60  # drop a file's cache after 10 min without readers
+_REF_TTL = 15 * 60        # refresh the message (file reference) every 15 min
+_MSG_TTL = 6 * 60 * 60
 
 # (chat_id, message_id) -> (client, message, cached_at)
-_cache: dict = {}
+_msg_cache: dict = {}
+# (chat_id, message_id) -> _FileStore
+_stores: Dict[tuple, "_FileStore"] = {}
 
 
 def get_stream_url(chat_id: int, message_id: int) -> str:
@@ -52,24 +67,34 @@ def _get_media(message):
     )
 
 
-def _prune_cache() -> None:
+def _prune() -> None:
     now = time.time()
-    for key in [k for k, v in _cache.items() if now - v[2] > _CACHE_TTL * 6]:
-        _cache.pop(key, None)
+    for key in [k for k, v in _msg_cache.items() if now - v[2] > _MSG_TTL]:
+        _msg_cache.pop(key, None)
+    for key in [k for k, s in _stores.items() if s.idle(now)]:
+        _stores.pop(key, None)
 
 
+# --------------------------------------------------------------- messages
 def remember(message, client=None) -> None:
-    """Caches a message we already have (the one /vplay replied to) so the
-    streamer can serve it without any extra Telegram API call, and warms up
-    the media connection for the file's DC so the first chunk is instant.
-    """
+    """Cache a message we already have so the streamer needs no extra API
+    call, and start downloading the first chunk(s) right away."""
     if message is None or _get_media(message) is None:
         return
     client = client or bot
     key = (message.chat.id, message.id)
-    _prune_cache()
-    _cache[key] = (client, message, time.time())
-    _warm_media_dc(client, _get_media(message))
+    _prune()
+    _msg_cache[key] = (client, message, time.time())
+    media = _get_media(message)
+    _warm_media_dc(client, media)
+    try:
+        store = _store_for(key, getattr(media, "file_size", 0) or 0)
+        store.want(0)
+        mime = (getattr(media, "mime_type", "") or "").lower()
+        if store.total and store.total > 2 and ("mp4" in mime or "quicktime" in mime):
+            store.want(store.total - 1)  # moov atom usually at the end
+    except RuntimeError:
+        pass  # no running loop (import time) — fine
 
 
 def _warm_media_dc(client, media) -> None:
@@ -80,30 +105,33 @@ def _warm_media_dc(client, media) -> None:
         get_session = getattr(client, "get_session", None)
         if callable(get_session):
             task = asyncio.ensure_future(get_session(dc_id, is_media=True))
-            task.add_done_callback(lambda t: t.exception())  # silence "never retrieved"
-    except Exception as e:  # noqa: BLE001 - warm-up is only an optimisation
+            task.add_done_callback(lambda t: t.cancelled() or t.exception())
+    except Exception as e:  # noqa: BLE001 - optimisation only
         logger.debug("media DC warm-up skip: %s", e)
 
 
-_REF_TTL = 15 * 60  # refresh the message (file reference) every 15 min
-
-
-async def _fetch(chat_id: int, message_id: int, refresh: bool = False):
+async def _fetch(chat_id: int, message_id: int, refresh: bool = False, avoid=None):
+    """Returns (client, message). `avoid` = client to try LAST (it failed)."""
     key = (chat_id, message_id)
-    cached = _cache.get(key)
-    if cached and not refresh:
-        age = time.time() - cached[2]
-        if age < _CACHE_TTL:
-            if age < _REF_TTL:
-                return cached[0], cached[1]
-            refresh = True
-    for client in (bot, assistant):
+    cached = _msg_cache.get(key)
+    if cached and not refresh and avoid is None:
+        if time.time() - cached[2] < _REF_TTL:
+            return cached[0], cached[1]
+    order: List = [bot, assistant]
+    if cached and cached[0] in order and avoid is None:
+        order.remove(cached[0])
+        order.insert(0, cached[0])
+    if avoid in order:
+        order.remove(avoid)
+        order.append(avoid)
+    for client in order:
         try:
             msg = await client.get_messages(chat_id, message_id)
             if msg and not getattr(msg, "empty", False) and _get_media(msg):
-                _prune_cache()
-                _cache[key] = (client, msg, time.time())
+                _msg_cache[key] = (client, msg, time.time())
                 return client, msg
+        except FloodWait as e:
+            await asyncio.sleep(min(e.value, 30) + 1)
         except Exception as e:  # noqa: BLE001
             logger.debug("streamer get_messages via %s failed: %s", client.name, e)
     if cached:
@@ -111,6 +139,176 @@ async def _fetch(chat_id: int, message_id: int, refresh: bool = False):
     return None, None
 
 
+# ------------------------------------------------------------ chunk store
+class _Worker:
+    __slots__ = ("next", "until", "task")
+
+    def __init__(self, start: int, until: int):
+        self.next = start
+        self.until = until
+        self.task = None
+
+
+class _FileStore:
+    """Shared, bounded chunk cache + sequential prefetch workers for ONE file."""
+
+    def __init__(self, key: tuple, file_size: int):
+        self.key = key
+        self.size = int(file_size or 0)
+        self.total: Optional[int] = (self.size + CHUNK_SIZE - 1) // CHUNK_SIZE if self.size else None
+        self.eof: Optional[int] = None
+        self.chunks: "OrderedDict[int, bytes]" = OrderedDict()
+        self.waiters: Dict[int, asyncio.Future] = {}
+        self.workers: List[_Worker] = []
+        self.readers = 0
+        self.last_used = time.time()
+
+    def idle(self, now: float) -> bool:
+        return not self.readers and not self.workers and now - self.last_used > _STORE_IDLE_TTL
+
+    def _limit(self) -> Optional[int]:
+        return self.total if self.total is not None else self.eof
+
+    def _put(self, idx: int, data: bytes) -> None:
+        self.chunks[idx] = data
+        self.chunks.move_to_end(idx)
+        while len(self.chunks) > CACHE_CHUNKS:
+            self.chunks.popitem(last=False)
+        fut = self.waiters.pop(idx, None)
+        if fut is not None and not fut.done():
+            fut.set_result(data)
+
+    def _fail(self, lo: int, hi: int, exc: BaseException) -> None:
+        for i in [i for i in self.waiters if lo <= i < hi]:
+            fut = self.waiters.pop(i)
+            if not fut.done():
+                fut.set_exception(exc)
+
+    def _mark_eof(self, idx: int) -> None:
+        self.eof = idx
+        for i in [i for i in self.waiters if i >= idx]:
+            fut = self.waiters.pop(i)
+            if not fut.done():
+                fut.set_result(b"")
+
+    def want(self, idx: int) -> None:
+        """Make sure some worker fetches `idx` and the window after it."""
+        limit = self._limit()
+        if limit is not None and idx >= limit:
+            return
+        until = idx + PREFETCH_CHUNKS
+        if limit is not None:
+            until = min(until, limit)
+        for w in self.workers:
+            if w.next <= idx <= w.next + PREFETCH_CHUNKS:
+                if until > w.until:
+                    w.until = until
+                return
+        # Everything in the window already cached -> nothing to do.
+        if all(i in self.chunks for i in range(idx, until)):
+            return
+        w = _Worker(idx, until)
+        self.workers.append(w)
+        w.task = asyncio.ensure_future(self._run(w))
+
+    async def get(self, idx: int) -> bytes:
+        self.last_used = time.time()
+        limit = self._limit()
+        if limit is not None and idx >= limit:
+            return b""
+        data = self.chunks.get(idx)
+        if data is not None:
+            self.chunks.move_to_end(idx)
+            self.want(idx + 1)
+            return data
+        fut = self.waiters.get(idx)
+        if fut is None:
+            fut = asyncio.get_event_loop().create_future()
+            fut.add_done_callback(lambda f: f.cancelled() or f.exception())
+            self.waiters[idx] = fut
+        self.want(idx)
+        return await asyncio.wait_for(asyncio.shield(fut), timeout=_READ_TIMEOUT)
+
+    async def _run(self, w: _Worker) -> None:
+        retries = 0
+        client = None
+        try:
+            while w.next < w.until:
+                while w.next < w.until and w.next in self.chunks:
+                    w.next += 1
+                if w.next >= w.until:
+                    break
+                # Merge into another worker that is already at this position.
+                for o in self.workers:
+                    if o is not w and o.next <= w.next <= o.next + 2:
+                        o.until = max(o.until, w.until)
+                        return
+                client, message = await _fetch(*self.key)
+                if message is None:
+                    raise RuntimeError("media not found")
+                gen = client.stream_media(message, offset=w.next)
+                got_any = False
+                try:
+                    async for chunk in gen:
+                        got_any = True
+                        self._put(w.next, chunk)
+                        w.next += 1
+                        retries = 0
+                        if w.next >= w.until or w.next in self.chunks:
+                            break
+                    else:
+                        # Generator finished on its own -> real end of file.
+                        if self.total is None or w.next >= self.total:
+                            self._mark_eof(w.next)
+                            return
+                        if not got_any:
+                            raise EOFError("empty read")
+                except FloodWait as e:
+                    retries += 1
+                    if retries > 6:
+                        raise
+                    logger.info("streamer FloodWait %ss (msg %s)", e.value, self.key[1])
+                    await asyncio.sleep(e.value + 1)
+                except FileReferenceExpired:
+                    retries += 1
+                    if retries > 6:
+                        raise
+                    logger.info("streamer: file reference expired — refreshing msg %s", self.key[1])
+                    await _fetch(*self.key, refresh=True)
+                except (asyncio.TimeoutError, OSError, EOFError, ConnectionError) as e:
+                    retries += 1
+                    if retries > 6:
+                        raise
+                    await asyncio.sleep(min(2 ** retries, 10))
+                    if retries >= 3:
+                        await _fetch(*self.key, avoid=client)  # try the other account
+                    logger.info("streamer retry %s (msg %s): %s", retries, self.key[1], type(e).__name__)
+                finally:
+                    try:
+                        await gen.aclose()
+                    except Exception:  # noqa: BLE001
+                        pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning("streamer worker gave up (msg %s @%s): %s", self.key[1], w.next, e)
+            self._fail(w.next, w.until + 1, e)
+        finally:
+            try:
+                self.workers.remove(w)
+            except ValueError:
+                pass
+
+
+def _store_for(key: tuple, file_size: int) -> _FileStore:
+    store = _stores.get(key)
+    if store is None or (file_size and store.size != file_size):
+        store = _FileStore(key, file_size)
+        _stores[key] = store
+    return store
+
+
+# ------------------------------------------------------------------- HTTP
 def _parse_range(rng: str, file_size: int):
     """Returns (start, end, status) or None for an unsatisfiable range."""
     start, end, status = 0, max(file_size - 1, 0), 200
@@ -131,126 +329,28 @@ def _parse_range(rng: str, file_size: int):
     return start, end, status
 
 
-# Read-ahead buffer per HTTP connection (in 1 MiB chunks). ROOT FIX for
-# "beech me video/audio quality down ho jati hai": MTProto delivers chunks in
-# bursts with short stalls. Without a buffer ffmpeg starves during a stall,
-# PyTgCalls/WebRTC sees late frames and its congestion control drops the
-# bitrate (blurry video, muddy audio) and only slowly climbs back. Fetching
-# ahead keeps ffmpeg fed at a steady rate through those stalls.
-PREFETCH_CHUNKS = max(4, int(getattr(config, "STREAM_PREFETCH_MB", 16) or 16))
-_END = object()
-
-
-async def _prefetch(gen, size: int = PREFETCH_CHUNKS):
-    q: asyncio.Queue = asyncio.Queue(maxsize=size)
-
-    async def _producer():
+async def _pump(store: _FileStore, resp, start: int, end: Optional[int]) -> None:
+    pos = start
+    timeouts = 0
+    while end is None or pos <= end:
+        idx = pos // CHUNK_SIZE
         try:
-            async for c in gen:
-                await q.put(c)
-            await q.put(_END)
-        except asyncio.CancelledError:
-            raise
-        except BaseException as e:  # noqa: BLE001 - re-raised in consumer
-            await q.put(e)
-
-    task = asyncio.create_task(_producer())
-    try:
-        while True:
-            item = await q.get()
-            if item is _END:
+            data = await store.get(idx)
+        except asyncio.TimeoutError:
+            timeouts += 1
+            if timeouts > 3:
+                logger.warning("streamer: chunk %s of msg %s timed out", idx, store.key[1])
                 return
-            if isinstance(item, BaseException):
-                raise item
-            yield item
-    finally:
-        task.cancel()
-        try:
-            await task
-        except BaseException:  # noqa: BLE001
-            pass
-
-
-async def _pump(client, message, resp, start: int, length: int, file_size: int,
-                sent=None) -> None:
-    """Pump bytes, surviving mid-stream failures.
-
-    Telegram file references expire during long movies; FloodWait also hits.
-    Previously any exception ended the generator -> ffmpeg saw EOF -> audio
-    died. Now we re-fetch the message and resume from the exact byte offset.
-    """
-    pos = int(start)
-    end = int(start) + int(length) if file_size else None
-    retries = 0
-    while True:
-        remaining = (end - pos) if end is not None else None
-        if remaining is not None and remaining <= 0:
+            continue
+        timeouts = 0
+        if not data:
+            return  # EOF
+        off = pos - idx * CHUNK_SIZE
+        piece = data[off:] if end is None else data[off: off + (end - pos + 1)]
+        if not piece:
             return
-        skip = pos % CHUNK_SIZE
-        gen = client.stream_media(message, offset=pos // CHUNK_SIZE)
-        try:
-            async for chunk in _prefetch(gen):
-                if skip:
-                    chunk = chunk[skip:]
-                    skip = 0
-                if not chunk:
-                    continue
-                if remaining is not None and len(chunk) > remaining:
-                    chunk = chunk[: int(remaining)]
-                await resp.write(chunk)
-                pos += len(chunk)
-                if sent is not None:
-                    sent[0] += len(chunk)
-                if remaining is not None:
-                    remaining -= len(chunk)
-                    if remaining <= 0:
-                        return
-            if end is None:
-                return
-            raise EOFError("stream ended early")
-        except FloodWait as e:
-            retries += 1
-            if retries > 6:
-                logger.warning("stream pump: FloodWait retries exhausted")
-                return
-            await asyncio.sleep(e.value + 1)
-        except FileReferenceExpired:
-            retries += 1
-            if retries > 6:
-                logger.warning("stream pump: file reference keeps expiring")
-                return
-            logger.info("stream pump: file reference expired — refreshing message")
-            _cid = getattr(getattr(message, "chat", None), "id", None)
-            _mid = getattr(message, "id", None)
-            if _cid is None or _mid is None:
-                return
-            _cli, _msg = await _fetch(_cid, _mid, refresh=True)
-            if _msg is None:
-                return
-            client, message = _cli, _msg
-            await asyncio.sleep(0.5)
-        except (ConnectionResetError, BrokenPipeError):
-            return
-        except (asyncio.TimeoutError, OSError) as e:
-            retries += 1
-            if retries > 6:
-                logger.warning("stream pump: network retries exhausted (%s)", e)
-                return
-            await asyncio.sleep(min(2 ** retries, 10))
-        except EOFError:
-            retries += 1
-            if retries > 6:
-                logger.warning("stream pump: stream truncated repeatedly")
-                return
-            await asyncio.sleep(1)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("stream pump ended: %s", e)
-            return
-        finally:
-            try:
-                await gen.aclose()
-            except Exception:  # noqa: BLE001
-                pass
+        await resp.write(piece)
+        pos += len(piece)
 
 
 async def _handle_stream(request: web.Request) -> web.StreamResponse:
@@ -260,7 +360,7 @@ async def _handle_stream(request: web.Request) -> web.StreamResponse:
     except (KeyError, ValueError):
         return web.Response(status=400, text="bad ids")
 
-    client, message = await _fetch(chat_id, message_id)
+    _client, message = await _fetch(chat_id, message_id)
     if message is None:
         return web.Response(status=404, text="media not found")
 
@@ -273,60 +373,43 @@ async def _handle_stream(request: web.Request) -> web.StreamResponse:
         return web.Response(status=416, headers={"Content-Range": f"bytes */{file_size}"})
     start, end, status = parsed
 
-    length = end - start + 1 if file_size else 0
     headers = {"Content-Type": mime, "Accept-Ranges": "bytes"}
     if file_size:
-        headers["Content-Length"] = str(length)
+        headers["Content-Length"] = str(end - start + 1)
         if status == 206:
             headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
 
     if request.method == "HEAD":
         return web.Response(status=status, headers=headers)
 
+    _prune()
+    store = _store_for((chat_id, message_id), file_size)
     resp = web.StreamResponse(status=status, headers=headers)
     await resp.prepare(request)
-
     logger.info("Stream msg %s: %.1f MB, range %s-%s", message_id, file_size / 1e6, start, end)
-    sent = [0]
+
+    store.readers += 1
     try:
-        try:
-            await _pump(client, message, resp, start, length, file_size, sent)
-        except (asyncio.CancelledError, ConnectionResetError, FloodWait):
-            raise
-        except Exception as first:  # noqa: BLE001
-            # Stale file reference, or the cached message belongs to the
-            # other account (file refs are per-account). If nothing was
-            # written yet, refetch via the OTHER client and retry once —
-            # otherwise ffprobe gets an empty body and PyTgCalls crashes
-            # with ProcessLookupError.
-            if sent[0]:
-                raise
-            logger.info("Stream msg %s: %s — refetch + retry", message_id, first)
-            _cache.pop((chat_id, message_id), None)
-            other = assistant if client is bot else bot
-            client, message = None, None
-            for c in (other, assistant if other is bot else bot):
-                try:
-                    m = await c.get_messages(chat_id, message_id)
-                    if m and not getattr(m, "empty", False) and _get_media(m):
-                        client, message = c, m
-                        break
-                except Exception:  # noqa: BLE001
-                    continue
-            if message is None:
-                raise first
-            _cache[(chat_id, message_id)] = (client, message, time.time())
-            await _pump(client, message, resp, start, length, file_size)
-    except (asyncio.CancelledError, ConnectionResetError):
+        await _pump(store, resp, start, end if file_size else None)
+    except (asyncio.CancelledError, ConnectionResetError, BrokenPipeError):
         pass  # ffmpeg seeked / closed — normal
-    except FloodWait as fw:
-        logger.warning("Streamer FloodWait %ss", fw.value)
     except Exception as e:  # noqa: BLE001
-        if "closing transport" in str(e).lower() or "connection lost" in str(e).lower():
-            pass  # client went away mid-write — normal
-        else:
-            logger.warning("Streamer error: %s", e)
+        low = str(e).lower()
+        if "closing transport" not in low and "connection lost" not in low:
+            logger.warning("Streamer error (msg %s): %s", message_id, e)
+    finally:
+        store.readers -= 1
+        store.last_used = time.time()
     return resp
+
+
+def stats() -> dict:
+    return {
+        "files": len(_stores),
+        "cached_mb": sum(len(s.chunks) for s in _stores.values()),
+        "workers": sum(len(s.workers) for s in _stores.values()),
+        "readers": sum(s.readers for s in _stores.values()),
+    }
 
 
 async def start_streamer() -> None:
@@ -338,11 +421,18 @@ async def start_streamer() -> None:
     _runner = web.AppRunner(app)
     await _runner.setup()
     await web.TCPSite(_runner, "127.0.0.1", _PORT).start()
-    logger.info("0s streamer chal raha hai: http://127.0.0.1:%s", _PORT)
+    logger.info(
+        "0s streamer chal raha hai: http://127.0.0.1:%s (prefetch %s MB, cache %s MB/file)",
+        _PORT, PREFETCH_CHUNKS, CACHE_CHUNKS,
+    )
 
 
 async def stop_streamer() -> None:
     global _runner
+    for s in list(_stores.values()):
+        for w in list(s.workers):
+            if w.task is not None:
+                w.task.cancel()
     if _runner:
         await _runner.cleanup()
         _runner = None

@@ -94,12 +94,20 @@ async def resolve_track(message: Message, requested_by: str, requested_by_id: in
 
         _query = movie_search.query_from_text(message)
         if _query:
-            _found, _src = await movie_search.search(_query)
-            if _found is not None:
-                logger.info("resolve_track: name search hit (%s) for %r", _src, _query)
-                return movie_search.build_track(
-                    _found, requested_by, requested_by_id, _src
-                )
+            from bot.core.clients import assistant, bot
+
+            _entries, _sugg = await movie_search.find(_query, limit=5)
+            for _e in ([] if _sugg else _entries):
+                for _cli in (assistant, bot):
+                    try:
+                        _m = await _cli.get_messages(_e.chat_id, _e.msg_id)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if _m and not getattr(_m, "empty", False):
+                        logger.info("resolve_track: name search hit for %r -> %s", _query, _e.title)
+                        return movie_search.build_track(
+                            _m, requested_by, requested_by_id, "channel", client=_cli
+                        )
             raise ValueError(movie_search.not_found_text(_query))
     if media is None:
         raise ValueError(

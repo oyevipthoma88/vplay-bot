@@ -39,34 +39,32 @@ from typing import Optional
 
 from pytgcalls.types import AudioQuality, MediaStream, VideoQuality
 
-# AudioParameters / VideoParameters are documented but NOT exported by every
-# py-tgcalls build. A hard import crashes the whole bot at startup, so we
-# import them defensively and fall back to the quality ENUMS (always present).
+# py-tgcalls 2.x exports AudioParameters / VideoParameters from
+# `pytgcalls.types.raw` (NOT `pytgcalls.types`). The old import always
+# failed silently, so the bot never used its own quality settings and fell
+# back to enum defaults + a broken "-vf:video:mid" flag that py-tgcalls
+# simply dropped.
 try:
-    from pytgcalls.types import AudioParameters
-except ImportError:  # older / trimmed builds
-    AudioParameters = None
-
-try:
-    from pytgcalls.types import VideoParameters
-except ImportError:
-    VideoParameters = None
+    from pytgcalls.types.raw import AudioParameters, VideoParameters
+except ImportError:  # pragma: no cover - very old builds
+    try:
+        from pytgcalls.types import AudioParameters, VideoParameters
+    except ImportError:
+        AudioParameters = VideoParameters = None
 
 from bot import config
 from bot.core.clients import assistant, bot, call_py
 from bot.core.queue import Track, clear_state, get_state
 from bot.logger import logger
 
-# PyTgCalls enum names are HD_720p / HD_1080p (NOT FHD_1080p).
-# Telegram group calls cap at 720p@30fps; 1080p input is downscaled
-# server-side. Both aliases map to the real enum member.
-_VIDEO_QUALITY = {
-    "sd_360p": "SD_360p",
-    "sd_480p": "SD_480p",
-    "hd_720p": "HD_720p",
-    "hd_1080p": "HD_1080p",
-    "fhd_1080p": "HD_1080p",   # alias — enum has no FHD_1080p
-    "uhd_1440p": "UHD_1440p",
+# (width, height). Telegram renders group-call video at max 720p; 1080p
+# only costs CPU and makes WebRTC drop bitrate on small servers.
+_VIDEO_SIZES = {
+    "sd_360p": (640, 360),
+    "sd_480p": (854, 480),
+    "hd_720p": (1280, 720),
+    "hd_1080p": (1920, 1080),
+    "fhd_1080p": (1920, 1080),
 }
 
 # Method-name aliases across PyTgCalls versions, most recent name first.
@@ -77,6 +75,7 @@ _METHOD_ALIASES = {
     "resume": ("resume", "resume_stream"),
     "mute": ("mute", "mute_stream"),
     "unmute": ("unmute", "unmute_stream"),
+    "change_volume": ("change_volume_call", "change_volume"),
 }
 
 _locks: dict = {}
@@ -99,29 +98,27 @@ def _lock(chat_id: int) -> asyncio.Lock:
     return lock
 
 
+def _fps() -> int:
+    return min(max(int(getattr(config, "VIDEO_FPS", 30) or 30), 15), 30)
+
+
 def _video_quality():
-    """720p @ 30fps — Telegram's hard max. adjust_by_height=False keeps
-    width as reference (critical for 16:9 widescreen sources)."""
+    """Target size keeps the source aspect ratio (py-tgcalls computes the
+    real height from the width; adjust_by_height caps portrait videos so a
+    1080x1920 clip is not encoded at full size)."""
     key = (getattr(config, "DEFAULT_VIDEO_QUALITY", "hd_720p") or "hd_720p").lower()
-    attr = _VIDEO_QUALITY.get(key, "HD_720p")
-    fps = min(max(int(getattr(config, "VIDEO_FPS", 30) or 30), 15), 30)
+    w, h = _VIDEO_SIZES.get(key, (1280, 720))
     if VideoParameters is not None:
         try:
-            if attr in ("HD_720p", "HD_1080p"):
-                return VideoParameters(
-                    width=1280, height=720, frame_rate=fps,
-                    adjust_by_height=False,  # width is the reference
-                )
-            if attr == "SD_480p":
-                return VideoParameters(
-                    width=854, height=480, frame_rate=fps,
-                    adjust_by_height=False,
-                )
+            return VideoParameters(width=w, height=h, frame_rate=_fps(), adjust_by_height=True)
         except (TypeError, ValueError) as e:
             logger.warning("VideoParameters rejected (%s) — enum fallback", e)
-    return getattr(VideoQuality, attr, VideoQuality.HD_720p)
+    name = {640: "SD_360p", 854: "SD_480p", 1280: "HD_720p", 1920: "FHD_1080p"}.get(w, "HD_720p")
+    return getattr(VideoQuality, name, VideoQuality.HD_720p)
+
+
 def _audio_quality():
-    """48 kHz stereo. channels=2 is critical — default is mono."""
+    """48 kHz, stereo by default (AUDIO_CHANNELS=1 for mono)."""
     lvl = (getattr(config, "DEFAULT_AUDIO_QUALITY", "high") or "high").lower()
     if lvl == "low":
         return AudioQuality.LOW
@@ -129,46 +126,17 @@ def _audio_quality():
         return AudioQuality.MEDIUM
     if AudioParameters is not None:
         try:
-            return AudioParameters(bitrate=48000, channels=2)
+            ch = 1 if int(getattr(config, "AUDIO_CHANNELS", 2) or 2) == 1 else 2
+            return AudioParameters(bitrate=48000, channels=ch)
         except (TypeError, ValueError) as e:
             logger.warning("AudioParameters rejected (%s) — enum fallback", e)
     return AudioQuality.HIGH
-def _needs_manual_scale() -> bool:
-    """True when py-tgcalls build has no VideoParameters -> we scale ourselves."""
-    return VideoParameters is None
-
-
-def _scale_flag() -> str:
-    """Guarantee 720p even without VideoParameters.
-
-    Telegram caps group calls at 720p@30. If we leave scaling to
-    VideoQuality enum, some builds pass the raw source size and Telegram
-    does the downscale server-side (extra CPU + visible quality loss).
-    """
-    if not _needs_manual_scale():
-        return ""
-    fps = min(max(int(getattr(config, "VIDEO_FPS", 30) or 30), 15), 30)
-    return (
-        "-vf:video:mid "
-        "scale=1280:720:force_original_aspect_ratio=decrease,"
-        "setsar=1 -r:video:mid " + str(fps)
-    )
 
 
 def _readrate_flag() -> str:
-    """Optional read-ahead. EMPTY BY DEFAULT (root fix for audio stutter).
-
-    PyTgCalls spawns TWO ffmpeg processes (audio + video), each opening its
-    own HTTP connection to our local streamer, which pulls from Telegram over
-    MTProto. -readrate 2.0 makes BOTH ask for 2x realtime = 4x MTProto
-    throughput. The streamer can deliver ~1x, so both ffmpeg starve ->
-    audible stutter. ffmpeg also "catches up" in bursts after a stall, which
-    congests aiohttp and triggers the next stall.
-
-    Without the flag the 64 KB output pipe provides backpressure: a steady
-    ~1x pull with small headroom. Override only if the box has spare I/O:
-    FFMPEG_READRATE=1.1 .. 1.3
-    """
+    """Optional read-rate cap. EMPTY BY DEFAULT — ffmpeg's output pipe already
+    gives natural back-pressure; -readrate >1 made both ffmpeg processes pull
+    2x realtime and starve each other. Override: FFMPEG_READRATE=1.1..1.3"""
     try:
         val = float(getattr(config, "FFMPEG_READRATE", 0) or 0)
     except (TypeError, ValueError):
@@ -177,61 +145,57 @@ def _readrate_flag() -> str:
 
 
 def _ffmpeg_params(offset: int = 0) -> str:
-    """Tier 1 — lean, steady-pull, gap-filling."""
-    threads = max(2, int(getattr(config, "FFMPEG_THREADS", 2) or 2))
+    """Tier 1 — buffered input + audio drift correction.
+
+    py-tgcalls syntax: sections `--audio` / `--video` (default: both) and
+    positions `-b:start` (before -i), `-b:mid` (after -i) and `-b:end`
+    (just before the output). The old "-vf:video:mid" style was not valid
+    syntax and was silently dropped.
+    """
+    threads = max(1, int(getattr(config, "FFMPEG_THREADS", 2) or 2))
     probe = int(getattr(config, "FFMPEG_PROBE_SIZE", 3000000) or 3000000)
     analyze = int(getattr(config, "FFMPEG_ANALYZE_US", 3000000) or 3000000)
-    rw_timeout = int(getattr(config, "FFMPEG_RW_TIMEOUT_US", 8000000) or 8000000)
-
+    rw_timeout = int(getattr(config, "FFMPEG_RW_TIMEOUT_US", 15000000) or 15000000)
     parts = [
         "-b:start",
         "-thread_queue_size", "4096",
         "-probesize", str(probe),
         "-analyzeduration", str(analyze),
-        "-fflags", "+genpts+igndts+discardcorrupt",
+        "-fflags", "+genpts+discardcorrupt",
         "-err_detect", "ignore_err",
-        "-reconnect", "1",
-        "-reconnect_streamed", "1",
-        "-reconnect_delay_max", "2",
         "-rw_timeout", str(rw_timeout),
+        "-threads", str(threads),
     ]
     rr = _readrate_flag()
     if rr:
         parts += rr.split()
-    parts += ["-threads", str(threads)]
     if offset > 0:
         parts += ["-ss", str(int(offset))]
-    parts.append("-b:end")
-    sc = _scale_flag()
-    if sc:
-        parts += sc.split()
-    parts += ["-af:audio:mid", "aresample=async=1"]
+    # Audio only: resample with drift compensation so A/V stay in sync after
+    # a network hiccup instead of crackling.
+    parts += ["--audio", "-b:end", "-af", "aresample=async=1000:first_pts=0"]
     return " ".join(parts)
 
 
 def _ffmpeg_params_safe(offset: int = 0) -> str:
-    """Tier 2 — buffering only, no -af / no network options."""
-    threads = max(2, int(getattr(config, "FFMPEG_THREADS", 2) or 2))
+    """Tier 2 — buffering only, no filters."""
+    threads = max(1, int(getattr(config, "FFMPEG_THREADS", 2) or 2))
     parts = [
         "-b:start",
         "-thread_queue_size", "1024",
         "-probesize", "3000000",
         "-analyzeduration", "3000000",
-        "-fflags", "+genpts+igndts+discardcorrupt",
-        "-err_detect", "ignore_err",
+        "-fflags", "+genpts+discardcorrupt",
         "-threads", str(threads),
     ]
     if offset > 0:
         parts += ["-ss", str(int(offset))]
-    parts.append("-b:end")
     return " ".join(parts)
 
 
 def _ffmpeg_params_minimal(offset: int = 0) -> str:
     """Tier 3 — last resort: plain input seek only."""
-    return f"-ss {int(offset)}" if offset > 0 else ""
-
-
+    return f"-b:start -ss {int(offset)}" if offset > 0 else ""
 
 
 async def preflight_probe(source: str) -> None:
@@ -264,7 +228,7 @@ async def preflight_probe(source: str) -> None:
         except ProcessLookupError:
             pass
         raise RuntimeError(
-            "⚠️ Media 30 second me read nahi hui (file/link bahut slow hai). Dobara try karein."
+            "⚠️ Media 20 second me read nahi hui (file/link bahut slow hai). Dobara try karein."
         ) from e
     try:
         import json
@@ -437,11 +401,13 @@ async def _start_stream(chat_id: int, track: Track, offset: int = 0) -> None:
         await ensure_group_call(chat_id)
 
     logger.info("Chat %s: stream start — %s (offset %s)", chat_id, track.title, offset)
+    _vq, _aq = _video_quality(), _audio_quality()
     logger.info(
-        "QUALITY DIAG — video=%s audio=%s params=%r",
-        type(_video_quality()).__name__,
-        type(_audio_quality()).__name__,
-        _ffmpeg_params(offset),
+        "QUALITY — video=%s audio=%s",
+        f"{getattr(_vq, 'width', '?')}x{getattr(_vq, 'height', '?')}@{getattr(_vq, 'frame_rate', '?')}"
+        if VideoParameters is not None and isinstance(_vq, VideoParameters) else _vq,
+        f"{getattr(_aq, 'bitrate', '?')}Hz/{getattr(_aq, 'channels', '?')}ch"
+        if AudioParameters is not None and isinstance(_aq, AudioParameters) else _aq,
     )
     # SEEK/SKIP FIX: PyTgCalls fires StreamEnded for the OLD stream when
     # play() replaces it. _on_stream_end uses state.last_start as a guard

@@ -373,27 +373,36 @@ def _register_private_hint(commands):
     return _hint
 
 
-# Pending "kaunsa play karein?" choices: token -> {chat, items, ts, force}
+# Pending "kaunsa play karein?" lists: token -> {chat, entries, ts, force, user, query, suggested}
 _pending_picks: dict = {}
-_PICK_TTL = 10 * 60
+_PICK_TTL = 15 * 60
+_search_locks: dict = {}
 
 
-def _new_pick(chat_id: int, items: list, force: bool) -> str:
+def _new_pick(chat_id: int, entries: list, force: bool, user_id: int, query: str,
+              suggested: bool) -> str:
     import secrets
     import time as _t
     now = _t.time()
     for k in [k for k, v in _pending_picks.items() if now - v["ts"] > _PICK_TTL]:
         _pending_picks.pop(k, None)
     token = secrets.token_hex(4)
-    _pending_picks[token] = {"chat": chat_id, "items": items, "ts": now, "force": force}
+    _pending_picks[token] = {
+        "chat": chat_id, "entries": entries, "ts": now, "force": force,
+        "user": user_id, "query": query, "suggested": suggested,
+    }
     return token
 
 
 async def _maybe_show_choices(message: Message, force: bool) -> bool:
-    """For /vplay <name>: search and, if more than one file matches, post a
-    button list. Returns True when the request was handled here."""
+    """/vplay <name>: search the movie channel(s).
+
+    * exactly one match  -> play it straight away
+    * several matches    -> colored button list, LATEST upload on top (green)
+    * no exact match     -> "kya aap ye dhoondh rahe the?" suggestions
+    Returns True when the request was handled here.
+    """
     from bot.core import movie_search
-    from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
     if not movie_search.looks_like_name_query(message):
         return False
@@ -401,66 +410,65 @@ async def _maybe_show_choices(message: Message, force: bool) -> bool:
     if not query:
         return False
 
-    status = await message.reply_text("🔍 <b>Movie search ho rahi hai…</b>", **ui.HTML)
+    user_id = message.from_user.id if message.from_user else 0
+    status = await message.reply_text(
+        f"🔍 <b>Search ho raha hai…</b>  <code>{html.escape(query[:60])}</code>", **ui.HTML
+    )
+    # One search per chat at a time — a spammed /vplay can't flood Telegram.
+    lock = _search_locks.setdefault(message.chat.id, asyncio.Lock())
     try:
-        results = await movie_search.search_many(query)
+        async with lock:
+            entries, suggested = await movie_search.find(query, limit=30)
     except Exception as e:  # noqa: BLE001
-        logger.warning("search_many fail: %s", e)
-        results = []
+        logger.warning("movie find fail: %s", e)
+        entries, suggested = [], False
 
-    if not results:
-        await status.edit_text(movie_search.not_found_text(query), **ui.HTML)
+    if not entries:
+        await _safe_edit(status, movie_search.not_found_text(query))
         return True
 
-    items = []
-    for m in results:
-        items.append((m.chat.id, m.id, movie_search.result_label(m)))
-    if len(items) == 1:
-        try:
-            await status.delete()
-        except Exception:  # noqa: BLE001
-            pass
-        await _play_from_pick(message.chat.id, items[0], message.from_user, force, reply_to=message)
+    if len(entries) == 1 and not suggested:
+        await _play_entry(message.chat.id, entries[0], message.from_user, force, status=status)
         return True
 
-    token = _new_pick(message.chat.id, items, force)
-    rows = [[InlineKeyboardButton(f"{i}. {lbl}", callback_data=f"vpick|{token}|{i - 1}")]
-            for i, (_, _, lbl) in enumerate(items, 1)]
-    rows.append([InlineKeyboardButton("❌ Cancel", callback_data=f"vpick|{token}|x")])
-    await status.edit_text(
-        f"🎬 <b>{len(items)} results mile</b> — <code>{html.escape(query[:60])}</code>\n"
-        "Kaunsa play karna hai? Neeche button dabayein 👇",
-        reply_markup=InlineKeyboardMarkup(rows), **ui.HTML,
+    token = _new_pick(message.chat.id, entries, force, user_id, query, suggested)
+    await _safe_edit(
+        status,
+        ui.search_results_text(query, entries, 0, suggested),
+        ui.search_results_markup(token, entries, 0, suggested),
     )
     return True
 
 
-async def _play_from_pick(chat_id: int, item, user, force: bool, reply_to: Message = None,
-                          status: Message = None) -> None:
-    from bot.core import movie_search
-
-    src_chat, src_id, _ = item
-    msg = None
+async def _fetch_entry_message(entry):
+    """Fresh message for an index entry -> (client, message) or (None, None)."""
     for cli in (assistant, bot):
         try:
-            m = await cli.get_messages(src_chat, src_id)
+            m = await cli.get_messages(entry.chat_id, entry.msg_id)
             if m and not getattr(m, "empty", False):
-                msg = m
-                break
+                return cli, m
         except Exception as e:  # noqa: BLE001
             logger.info("pick get_messages via %s: %s", cli.name, e)
-    if msg is None:
-        text = "⚠️ Ye file ab available nahi hai. Dobara search karein."
+    return None, None
+
+
+async def _play_entry(chat_id: int, entry, user, force: bool, reply_to: Message = None,
+                      status: Message = None) -> None:
+    from bot.core import movie_index, movie_search
+
+    cli, msg = await _fetch_entry_message(entry)
+    if msg is None or movie_search._media_of(msg)[0] is None:  # noqa: SLF001
+        movie_index.forget(entry.chat_id, entry.msg_id)
+        text = "⚠️ Ye file ab channel me nahi hai (delete ho gayi). Dobara search karein."
         if status is not None:
-            await status.edit_text(text)
+            await _safe_edit(status, text)
         elif reply_to is not None:
             await reply_to.reply_text(text)
         return
     user_name = getattr(user, "first_name", None) or "User"
     user_id = getattr(user, "id", 0) or 0
-    track = movie_search.build_track(msg, user_name, user_id, "channel")
+    track = movie_search.build_track(msg, user_name, user_id, "channel", client=cli)
     await _start_track(chat_id, track, user_name, user_id, force, reply_to=reply_to, status=status)
-
 
 async def _start_track(chat_id: int, track, user_name: str, user_id: int, force: bool,
                        reply_to: Message = None, status: Message = None) -> None:
@@ -523,6 +531,38 @@ async def _start_track(chat_id: int, track, user_name: str, user_id: int, force:
         await status.edit_text(ui.queued_card(track, len(get_state(chat_id).queue)))
 
 
+async def _can_use_pick(client, query: CallbackQuery, pick: dict) -> bool:
+    uid = query.from_user.id if query.from_user else 0
+    if not pick.get("user") or uid == pick.get("user") or uid == config.OWNER_ID:
+        return True
+    try:
+        member = await client.get_chat_member(pick["chat"], uid)
+        return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@bot.on_callback_query(filters.regex(r"^vnoop$"))
+async def vnoop_cb(client, query: CallbackQuery):
+    await query.answer()
+
+
+@bot.on_callback_query(filters.regex(r"^vpage\|([0-9a-f]+)\|(\d+)$"))
+async def vpage_cb(client, query: CallbackQuery):
+    _, token, page = query.data.split("|")
+    pick = _pending_picks.get(token)
+    if pick is None or query.message is None or query.message.chat.id != pick["chat"]:
+        await query.answer("⌛ Ye list expire ho gayi. /vplay dobara karein.", show_alert=True)
+        return
+    page = int(page)
+    await query.answer(f"📄 Page {page + 1}")
+    await _safe_edit(
+        query.message,
+        ui.search_results_text(pick["query"], pick["entries"], page, pick["suggested"]),
+        ui.search_results_markup(token, pick["entries"], page, pick["suggested"]),
+    )
+
+
 @bot.on_callback_query(filters.regex(r"^vpick\|([0-9a-f]+)\|(\d+|x)$"))
 async def vpick_cb(client, query: CallbackQuery):
     _, token, idx = query.data.split("|")
@@ -530,23 +570,73 @@ async def vpick_cb(client, query: CallbackQuery):
     if pick is None or query.message is None or query.message.chat.id != pick["chat"]:
         await query.answer("⌛ Ye list expire ho gayi. /vplay dobara karein.", show_alert=True)
         return
+    if not await _can_use_pick(client, query, pick):
+        await query.answer("🔒 Ye list kisi aur ne request ki hai. Apna /vplay bhejein.", show_alert=True)
+        return
     if idx == "x":
         _pending_picks.pop(token, None)
-        await query.answer("Cancel")
+        await query.answer("❌ Cancelled")
         try:
             await query.message.delete()
         except Exception:  # noqa: BLE001
             pass
         return
     i = int(idx)
-    if i >= len(pick["items"]):
+    if i >= len(pick["entries"]):
         await query.answer("Invalid choice", show_alert=True)
         return
     _pending_picks.pop(token, None)  # one tap only — no double play
-    await query.answer("▶️ Play ho raha hai…")
-    await _play_from_pick(pick["chat"], pick["items"][i], query.from_user, pick["force"],
-                          status=query.message)
+    entry = pick["entries"][i]
+    await query.answer(f"▶️ {entry.title[:40]}")
+    await _safe_edit(
+        query.message,
+        f"⚡ <b>Stream start ho raha hai…</b>\n🎬 {html.escape(entry.title[:60])}"
+        + (f" ({entry.year})" if entry.year else "")
+        + (f"  ·  {entry.quality}" if entry.quality else ""),
+    )
+    await _play_entry(pick["chat"], entry, query.from_user, pick["force"], status=query.message)
 
+
+@bot.on_message(cmd(["vindex", "vreindex"]))
+@error_guard
+async def vindex_cmd(client, message: Message):
+    """Movie channel index status. Owner: `/vindex rebuild` to re-scan now."""
+    import time as _t
+    from bot.core import movie_index, streamer
+
+    parts = (message.text or "").split()
+    is_owner = bool(message.from_user and message.from_user.id == config.OWNER_ID)
+    if len(parts) > 1 and parts[1].lower() in ("rebuild", "refresh", "scan"):
+        if not is_owner:
+            await message.reply_text("🔒 Sirf owner index rebuild kar sakta hai.")
+            return
+        m = await message.reply_text("🔄 <b>Movie channels scan ho rahe hain…</b>", **ui.HTML)
+        res = await movie_index.rebuild(full=True)
+        await _safe_edit(m, f"✅ <b>Index ready</b> — {res['files']:,} files · {res['channels']} channel(s)")
+        return
+    st = movie_index.status()
+    ss = streamer.stats()
+    ago = int(_t.time() - st["last_refresh"]) if st["last_refresh"] else None
+    lines = [
+        "📚 <b>Movie Index</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"Status: {'🟢 Ready' if st['ready'] else ('⏳ Ban raha hai' if st['building'] else '🔴 Not ready')}",
+        f"Files: <b>{st['files']:,}</b>",
+        f"Last scan: {f'{ago // 60} min pehle' if ago is not None else '—'}",
+        "",
+        f"📡 <b>Channels ({len(st['channels'])})</b>",
+    ]
+    for cid, title in st["channels"][:10]:
+        lines.append(f"   • {html.escape(title or 'Channel')} <code>{cid}</code>")
+    if not st["channels"]:
+        lines.append("   <i>Koi nahi — assistant ko movie channel me admin banayein</i>")
+    if st["error"]:
+        lines.append(f"\n⚠️ <code>{html.escape(st['error'][:150])}</code>")
+    lines += ["", "⚡ <b>Streamer</b>",
+              f"   Files: {ss['files']} · Cache: {ss['cached_mb']} MB · Readers: {ss['readers']}"]
+    if is_owner:
+        lines.append("\n<i>Rebuild: /vindex rebuild</i>")
+    await message.reply_text("\n".join(lines), **ui.HTML)
 
 @bot.on_message(cmd(["vplay", "play"]) & _GROUP)
 @error_guard

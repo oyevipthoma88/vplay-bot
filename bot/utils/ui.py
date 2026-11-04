@@ -243,6 +243,7 @@ def group_start_text() -> str:
         "",
         "<b>⚡ Quick commands</b>",
         "<code>/vplay</code> — play (reply / link)",
+        "<code>/vplay toxic</code> — channel se movie dhoondo",
         "<code>/vseek 5m</code> — smart seek",
         "<code>/vpause</code> · <code>/vresume</code> · <code>/vskip</code>",
         "<code>/vqueue</code> · <code>/vloop</code> · <code>/vstop</code>",
@@ -250,6 +251,54 @@ def group_start_text() -> str:
         "<i>📚 Saari commands: <code>/help</code></i>",
     ])
 
+
+
+HELP_PAGES = {
+    "main": ("\n".join([
+        "📖 <b>VPlay Help</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "<blockquote>Group ke video chat me movie / video / audio — 0 second start.</blockquote>",
+        "",
+        "🎬 <code>/vplay toxic</code> — channel se movie dhoondo",
+        "📎 <code>/vplay</code> — kisi video par reply karke",
+        "🔗 <code>/vplay &lt;link&gt;</code> — direct URL",
+        "",
+        "<i>Neeche category chunein 👇</i>",
+    ]),),
+    "play": ("\n".join([
+        "🎬 <b>Playback</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "<code>/vplay naam</code> — search; results rangeen buttons me, latest upload upar",
+        "<code>/vplayforce naam</code> — queue bypass, turant replace",
+        "<code>/vpause</code> · <code>/vresume</code> · <code>/vskip</code> · <code>/vstop</code>",
+        "<code>/vseek 1:30</code> · <code>/vseek 5m</code> · <code>/seekback 30</code>",
+        "<code>/vmute</code> · <code>/vunmute</code> · <code>/vvolume 150</code>",
+    ]),),
+    "queue": ("\n".join([
+        "📜 <b>Queue</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "<code>/vqueue</code> — queue dekho",
+        "<code>/vloop</code> — off → track → queue",
+        "<code>/vshuffle</code> — queue shuffle",
+        "<code>/vnp</code> — abhi kya chal raha hai",
+    ]),),
+    "system": ("\n".join([
+        "🛠 <b>System</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "<code>/vdebug</code> — bot / assistant / video chat status",
+        "<code>/vindex</code> — movie channel index status",
+        "<code>/ping</code> · <code>/stats</code> · <code>/id</code>",
+        "<code>/owner</code> — owner panel",
+    ]),),
+    "setup": ("\n".join([
+        "❓ <b>Setup</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "1️⃣ Bot + assistant ko group me <b>admin</b> banayein (Manage Video Chats)",
+        "2️⃣ Dono ko movie channel me <b>admin</b> banayein — channel apne aap mil jayega",
+        "3️⃣ Group me video chat start karein (ya assistant khud start karega)",
+        "4️⃣ <code>/vplay naam</code> bhejein",
+    ]),),
+}
 
 
 def help_text(page: str = "main") -> str:
@@ -513,3 +562,107 @@ def owner_panel_markup() -> Markup:
     return Markup(rows)
 
 
+
+
+# --- Movie search results (colored buttons, latest upload first) ---------
+
+SEARCH_PAGE_SIZE = 6
+
+
+def _ago(ts: int) -> str:
+    import time as _t
+    if not ts:
+        return ""
+    d = max(0, int(_t.time()) - int(ts))
+    if d < 3600:
+        return "🆕 Abhi upload"
+    if d < 86400:
+        return f"🆕 {d // 3600}h pehle"
+    if d < 2 * 86400:
+        return "Kal"
+    if d < 30 * 86400:
+        return f"{d // 86400} din pehle"
+    from datetime import datetime, timedelta, timezone
+    return (datetime.fromtimestamp(ts, timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%d %b %Y")
+
+
+def _short_size(b: int) -> str:
+    if not b:
+        return ""
+    gb = b / (1024 ** 3)
+    return f"{gb:.1f}GB" if gb >= 1 else f"{b / (1024 ** 2):.0f}MB"
+
+
+def _short_dur(s: int) -> str:
+    if not s:
+        return ""
+    h, m = divmod(int(s) // 60, 60)
+    return f"{h}h {m:02d}m" if h else f"{m}m"
+
+
+def _result_name(e) -> str:
+    name = e.title
+    if e.year:
+        name += f" ({e.year})"
+    if e.episode:
+        name += f" {e.episode}"
+    return name
+
+
+def search_results_text(query: str, entries: list, page: int, suggested: bool = False) -> str:
+    total = len(entries)
+    pages = max(1, (total + SEARCH_PAGE_SIZE - 1) // SEARCH_PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    if suggested:
+        head = ["🤔 <b>Exact match nahi mila</b>",
+                "━━━━━━━━━━━━━━━━━━━━",
+                f"🔎 <code>{html.escape(query[:60])}</code>",
+                "<i>Kya aap inme se koi dhoondh rahe the?</i>"]
+    else:
+        head = ["🎬 <b>VPlay Search</b>",
+                "━━━━━━━━━━━━━━━━━━━━",
+                f"🔎 <code>{html.escape(query[:60])}</code>  ·  <b>{total}</b> result{'s' if total != 1 else ''}",
+                "🟢 <i>Latest upload sabse upar</i>"]
+    lines = head + [""]
+    start = page * SEARCH_PAGE_SIZE
+    for i, e in enumerate(entries[start:start + SEARCH_PAGE_SIZE], start=start + 1):
+        badge = "🟢" if i == 1 and not suggested else "🔵"
+        lines.append(f"{badge} <b>{i}. {html.escape(_smart_truncate(_result_name(e), 48))}</b>")
+        meta = [x for x in (
+            ("🎞 " + e.quality) if e.quality else ("🎞 Video" if e.is_video else "🎵 Audio"),
+            ("💾 " + _short_size(e.size)) if e.size else "",
+            ("⏱ " + _short_dur(e.duration)) if e.duration else "",
+            (_ago(e.date) if _ago(e.date).startswith("🆕") else "📅 " + _ago(e.date)) if e.date else "",
+        ) if x]
+        lines.append("      " + "  ·  ".join(meta))
+    lines += ["", "━━━━━━━━━━━━━━━━━━━━",
+              "👇 <i>Button dabayein — wahi turant play hoga</i>"
+              + (f"  ·  Page {page + 1}/{pages}" if pages > 1 else "")]
+    return "\n".join(lines)
+
+
+def search_results_markup(token: str, entries: list, page: int, suggested: bool = False) -> Markup:
+    total = len(entries)
+    pages = max(1, (total + SEARCH_PAGE_SIZE - 1) // SEARCH_PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    G, P, D = _style("success"), _style("primary"), _style("danger")
+    rows = []
+    start = page * SEARCH_PAGE_SIZE
+    for i, e in enumerate(entries[start:start + SEARCH_PAGE_SIZE], start=start):
+        bits = [_smart_truncate(_result_name(e), 30)]
+        if e.quality:
+            bits.append(e.quality)
+        if e.size:
+            bits.append(_short_size(e.size))
+        label = f"{'🆕' if i == 0 and not suggested else '▶️'} {i + 1}. " + " · ".join(bits)
+        rows.append([_btn(label[:64], f"vpick|{token}|{i}", style=G if i == 0 and not suggested else P)])
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(_btn("◀️ Prev", f"vpage|{token}|{page - 1}", style=P))
+        nav.append(_btn(f"📄 {page + 1}/{pages}", "vnoop"))
+        if page < pages - 1:
+            nav.append(_btn("Next ▶️", f"vpage|{token}|{page + 1}", style=P))
+        rows.append(nav)
+    rows.append([_btn("❌ Cancel", f"vpick|{token}|x", style=D)])
+    return Markup(rows)
